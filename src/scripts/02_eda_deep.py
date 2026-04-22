@@ -533,10 +533,7 @@ def main():
             z_tmax = min(t_work[-1], tc + zoom_window)
             z_mask = (t_work >= z_tmin) & (t_work <= z_tmax)
 
-            axins = inset_axes(ax_main, width="40%", height="35%",
-                               loc='upper right',
-                               bbox_to_anchor=ax_main.bbox,
-                               bbox_transform=ax_main.transAxes)
+            axins = ax_main.inset_axes([0.54, 0.52, 0.44, 0.40])
             axins.plot(t_work[z_mask], ci[z_mask], color='#2980b9', linewidth=1.5)
             axins.plot(t_work[z_mask], cj[z_mask], color='#e74c3c', linewidth=1.5)
             axins.axvline(tc, color='gray', linestyle='--', linewidth=1.0)
@@ -552,11 +549,13 @@ def main():
             axins.set_title("Zoom", fontsize=6)
             axins.grid(alpha=0.3)
 
-            try:
-                mark_inset(ax_main, axins, loc1=2, loc2=4,
-                           fc="none", ec="gray", linewidth=0.5)
-            except Exception:
-                pass
+            # Draw a simple rectangle on main plot to indicate zoom region
+            from matplotlib.patches import Rectangle
+            rect = Rectangle((z_tmin, z_ymin), z_tmax - z_tmin,
+                              z_ymax - z_ymin,
+                              linewidth=0.8, edgecolor='gray',
+                              facecolor='none', linestyle='--')
+            ax_main.add_patch(rect)
 
         fig.suptitle(
             "Deep Crossing Examples — Why Full-Curve Regression Is Required\n"
