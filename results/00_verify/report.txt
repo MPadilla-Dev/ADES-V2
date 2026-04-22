@@ -1,0 +1,59 @@
+============================================================
+  DATASET VERIFICATION REPORT
+============================================================
+
+[1] Loading CSV...
+  CSV rows       : 144,255
+  Time columns   : 221  (0h – 22000h, step 100h)
+  Reliability min: 0.275101
+  Reliability max: 1.000000
+  Any NaN in CSV : False
+
+[2] Scanning ZIP...
+  ZIP graph files : 144,286
+  Matched (usable): 144,255
+  In ZIP, not CSV : 31  ← will be skipped
+  In CSV, not ZIP : 0  ← missing inputs
+  Skipped IDs     : ['0000_0001', '0001_0001', '0002_0001', '0003_0001', '0004_0001', '0005_0001', '0006_0001', '0007_0001', '0008_0001', '0009_0001'] ...
+
+[3] Allocation balance...
+  Number of allocations : 31
+  Min samples/alloc     : 1,157  (alloc 0000)
+  Max samples/alloc     : 7,372  (alloc 0019)
+  Mean samples/alloc    : 4653.4
+  → Saved allocation_balance.png
+
+[4] Reliability curve profiling...
+  R at t=0 (should all be 1.0) — unique values: [1.]
+  R at t=22000h:
+    mean  = 0.585364
+    std   = 0.104682
+    min   = 0.275101
+    max   = 0.883374
+  → Saved curve_distribution.png
+
+  'Number of 9s' breakdown at final timestep:
+    < 0.9               : 144,255  (100.0%)
+    0.9–0.99            :      0  (0.0%)
+    0.99–0.999          :      0  (0.0%)
+    0.999–0.9999        :      0  (0.0%)
+    >= 0.9999           :      0  (0.0%)
+
+[5] Computing mean curves per allocation...
+  → Saved curve_spread_per_alloc.png
+
+[6] Node type analysis (sampling 500 graphs)...
+  Parse errors in sample: 0
+  Node counts — min: 30, max: 30, mean: 30.0
+  Node type totals across 500 graphs:
+    link      : 7,500
+    compute   : 3,000
+    task      : 3,000
+    switch    : 1,500
+  → Saved node_type_distribution.png
+
+[7] Duplicate/symmetric graph detection (sampling 2,000 graphs)...
+  Graphs sampled          : 2000
+  Unique graph structures : 2000
+  Duplicate groups found  : 0
+  Total duplicate samples : 0

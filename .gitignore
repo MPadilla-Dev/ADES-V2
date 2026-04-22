@@ -3,9 +3,7 @@ data/
 *.h5
 *.zip
 *.csv
-results/
 logs/
-*.png
 *.out
 __pycache__/
 *.pyc
@@ -13,4 +11,3 @@ __pycache__/
 *.egg-info/
 .idea/
 .vscode/
-!results/02_eda_deep/*.png
