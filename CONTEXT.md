@@ -208,6 +208,17 @@ equivalent redundancy/reliability properties through different physical layouts.
 **Implication for splitting:** Never split a curve hash group across train/test.
 All samples sharing a curve hash must go entirely to one side.
 
+### Finding 7: Task allocation explains 73% of overall reliability variance.
+Hardware configuration explains only 27%. Task placement is the dominant
+driver of system reliability, not hardware design. This reframes the
+problem: the model is primarily learning task-placement → reliability,
+not hardware → reliability.
+
+Three generalization questions ranked by difficulty:
+  Easy   — curve-hash split (unseen reliability values)
+  Medium — allocation split (unseen task strategies, known hardware)
+  Hard   — hardware-config split (completely unseen hardware + tasks)
+
 ### Curve Crossings — Critical Finding
 ```
 Method: pairwise comparison of 3,336 unique curves
