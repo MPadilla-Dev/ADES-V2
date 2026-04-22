@@ -1,0 +1,15 @@
+data/
+*.pt
+*.h5
+*.zip
+*.csv
+results/
+logs/
+*.png
+*.out
+__pycache__/
+*.pyc
+.venv/
+*.egg-info/
+.idea/
+.vscode/
