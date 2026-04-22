@@ -13,14 +13,18 @@ HDF5 Layout:
         config_nums     [N]        str   — "0736"
         curve_hashes    [N]        str   — md5 of y_curve
                                            used for curve-level split
-        adj_hashes      [N]        str   — md5 of full adjacency matrix
-        hw_hashes       [N]        str   — Weisfeiler-Lehman graph hash
-                                           of hardware-only graph
-                                           (task edges stripped, node
-                                           type attributes included)
-                                           used for hardware-level split
-                                           392 unique values confirmed
-                                           by exhaustive VF2 verification
+        adj_hashes      [N]        str   — md5 of full 30-node adjacency
+                                           matrix (unique per sample)
+        hw_md5_hashes   [N]        str   — md5 of hardware-only edge set
+                                           (task edges stripped)
+                                           11,903 unique values
+                                           used for hardware-wiring split
+        hw_wl_hashes    [N]        str   — Weisfeiler-Lehman hash of
+                                           hardware-only graph (task edges
+                                           stripped, node type attribute)
+                                           392 unique values
+                                           VF2-verified exhaustively
+                                           used for topology-level split
         node_names      [N, 30]    str   — preserved for re-featurization
     features/
         node_features   [N, 30, 5] f32   — one-hot type encoding
@@ -30,45 +34,50 @@ HDF5 Layout:
     targets/
         y_curve         [N, 221]   f32   — full reliability curve 0h-22000h
     attrs:
-        time_values     [221]      f64   — actual hour values
-        n_samples, n_time_steps, n_nodes, n_features
+        time_values, n_samples, n_time_steps, n_nodes, n_features
 
-Node features (5-dim one-hot):
-    [0] compute   N1, N2 ...
-    [1] switch    S1, S2 ...
-    [2] link      N1S1, S1S2 ...
-    [3] task_T1   T1_1, T1_2 ...
-    [4] task_T2   T2_4, T2_5 ...
+--- UNDERSTANDING THE TWO HARDWARE HASHES ---
 
-Hardware hash definition:
-    Step 1: Strip all edges where either endpoint is a task node.
-    Step 2: Build a NetworkX graph on the remaining 24 hardware nodes,
-            with node type (compute/switch/link) as a node attribute.
-    Step 3: Compute Weisfeiler-Lehman graph hash with node_attr='ntype'
-            at iterations=4.
-    Two samples with the same hw_hash are isomorphic hardware layouts —
-    same physical structure with different node numbering.
+hw_md5_hashes (11,903 unique groups):
+    Definition: MD5 of the sorted hardware-only edge index after
+                stripping all edges touching task nodes.
+    Meaning: Two samples with the same hw_md5_hash have IDENTICAL
+             physical wiring — same compute-to-switch connections,
+             same switch-to-switch connections. They differ only in
+             task placement (which compute node hosts which task).
+    Split use: Hardware-wiring split. Holding out hw_md5 groups
+               means the model never sees a particular physical
+               wiring in any allocation during training.
+    Key fact:  Within a hw_md5 group, curves differ only because
+               task allocation changes which compute node the tasks
+               connect to. The curve difference is PURELY from
+               task placement variation.
 
-Optimization:
-    WL hash is expensive (requires NetworkX graph construction).
-    To avoid redundant computation, we first compute the cheap MD5
-    adjacency hash. Two graphs with different MD5 hashes cannot be
-    isomorphic, so they get different WL hashes trivially.
-    WL is only computed once per unique MD5 hash, then propagated
-    to all samples sharing that MD5 hash.
-    This reduces WL computations from 144,255 to ~11,903.
+hw_wl_hashes (392 unique groups, VF2-proven):
+    Definition: Weisfeiler-Lehman graph hash (iterations=4,
+                node_attr='ntype') on the hardware-only subgraph.
+    Meaning: Two samples with the same hw_wl_hash have hardware
+             subgraphs that are ISOMORPHIC at the node-type level —
+             same abstract topology (same degree sequence per type)
+             but possibly different specific node assignments.
+    Split use: Topology-level split. Coarser than hw_md5.
+    Key fact:  Within a hw_wl group, different hw_md5 groups can
+               exist. Their curve differences reflect genuinely
+               different wirings — e.g., the task-hosting compute
+               node (N6) may have degree 2 in one wiring and
+               degree 1 in another, producing different reliability
+               even though the hardware topology class is the same.
+    Open question: Whether hw_md5 or hw_wl is the right split
+                   level is a domain question sent to the expert.
+                   Both are stored so the decision can be made
+                   without rerunning preprocessing.
 
-Key facts confirmed by EDA and exhaustive VF2 verification:
-    - 392 truly unique hardware layouts (VF2-proven, 356,589 pairs checked)
-    - 3,336 unique reliability curves
-    - 11,903 unique MD5 hw hashes (isomorphism-unaware, ~30x overcount)
-    - Task allocation explains 73% of overall reliability variance
-    - Hardware layout explains 27%
+--- THREE SPLIT AXES (for 03_split.py) ---
 
-Three split axes available via stored hashes:
-    curve_hash  → curve-level split (unseen reliability values)
-    allocation  → allocation-level split (unseen task strategies)
-    hw_hash     → hardware-level split (unseen physical architectures)
+    curve_hashes  → 3,336 groups  — unseen reliability values
+    allocations   → 31 groups     — unseen task strategies
+    hw_md5_hashes → 11,903 groups — unseen hardware wirings
+    hw_wl_hashes  → 392 groups    — unseen hardware topologies
 
 Module : python-data/3.10-24.04
 Usage  : python src/scripts/01_preprocess.py
@@ -86,13 +95,18 @@ import networkx as nx
 from tqdm import tqdm
 
 # ── CONFIG ────────────────────────────────────────────────────────────────────
-CSV_PATH    = "data/new_raw/config_all_0_22000_100.csv"
-ZIP_PATH    = "data/new_raw/matrices.zip"
-OUTPUT_PATH = "data/dataset.h5"
-LOG_PATH    = "logs/01_preprocess.log"
-N_NODES     = 30
-N_FEATURES  = 5
-WL_ITERATIONS = 4   # WL iterations — 4 proven sufficient for this graph family
+CSV_PATH      = "data/new_raw/config_all_0_22000_100.csv"
+ZIP_PATH      = "data/new_raw/matrices.zip"
+OUTPUT_PATH   = "data/dataset.h5"
+LOG_PATH      = "logs/01_preprocess.log"
+N_NODES       = 30
+N_FEATURES    = 5
+WL_ITERATIONS = 4
+
+# Expected counts from prior analysis — used for verification
+EXPECTED_UNIQUE_CURVES   = 3336
+EXPECTED_UNIQUE_HW_MD5   = 11903
+EXPECTED_UNIQUE_HW_WL    = 392
 
 # ── LOGGING ───────────────────────────────────────────────────────────────────
 log_lines = []
@@ -148,86 +162,79 @@ def parse_graph_file(f_obj):
     """
     content    = f_obj.read().decode('utf-8')
     lines      = content.splitlines()
-
     if not lines:
         raise ValueError("Empty file")
-
     header     = lines[0].replace('#', '').strip()
     node_names = eval(header)
     n          = len(node_names)
-
     if n != N_NODES:
         raise ValueError(f"Expected {N_NODES} nodes, got {n}")
-
     matrix_str = ' '.join(lines[1:]).replace('[', ' ').replace(']', ' ')
     values     = np.fromstring(matrix_str, sep=' ')
-
     if values.size != n * n:
-        raise ValueError(
-            f"Matrix size mismatch: expected {n*n}, got {values.size}"
-        )
-
+        raise ValueError(f"Matrix mismatch: expected {n*n}, got {values.size}")
     return node_names, values.reshape(n, n).astype(np.float32)
 
 
 def md5_f32(arr: np.ndarray) -> str:
-    """MD5 hash of a float32 array."""
     return hashlib.md5(arr.astype(np.float32).tobytes()).hexdigest()
 
 
-def compute_md5_hw_hash(edge_idx: np.ndarray,
-                        node_feats: np.ndarray) -> str:
+def compute_hw_md5(edge_idx: np.ndarray,
+                   node_feats: np.ndarray) -> str:
     """
-    Fast MD5 hash of hardware-only edge set.
-    Used as a cheap pre-filter before WL computation.
-    Two graphs with different MD5 hw hashes cannot be isomorphic.
-    Two graphs with the same MD5 hw hash may or may not be isomorphic
-    — WL hash is needed to distinguish them.
+    MD5 of hardware-only edge set (task edges stripped).
+
+    Identical for two samples with the same physical wiring
+    regardless of task placement. Different for any change in
+    compute-to-switch or switch-to-switch connectivity.
+
+    11,903 unique values in this dataset.
     """
     is_task = (node_feats[:, 3] + node_feats[:, 4]) > 0
     mask    = ~is_task[edge_idx[0]] & ~is_task[edge_idx[1]]
     hw_ei   = edge_idx[:, mask]
-
     if hw_ei.shape[1] == 0:
         return 'empty'
-
     sorted_edges = hw_ei[:, np.lexsort((hw_ei[1], hw_ei[0]))]
     return hashlib.md5(sorted_edges.astype(np.int32).tobytes()).hexdigest()
 
 
-def build_hw_networkx_graph(edge_idx: np.ndarray,
-                             node_feats: np.ndarray) -> nx.Graph:
+def build_hw_nx_graph(edge_idx: np.ndarray,
+                      node_feats: np.ndarray) -> nx.Graph:
     """
-    Build a NetworkX graph from hardware-only edges.
-    Task nodes and their edges are excluded.
-    Node type (compute/switch/link) stored as 'ntype' attribute
-    so WL hash is type-aware.
+    Build hardware-only NetworkX graph (task nodes/edges excluded).
+    Node attribute 'ntype' = '0' (compute), '1' (switch), '2' (link).
+    Used for WL hash computation.
     """
     is_task = (node_feats[:, 3] + node_feats[:, 4]) > 0
     mask    = ~is_task[edge_idx[0]] & ~is_task[edge_idx[1]]
     hw_ei   = edge_idx[:, mask]
-
     G = nx.Graph()
-    for node_idx in range(len(node_feats)):
-        if is_task[node_idx]:
+    for n in range(len(node_feats)):
+        if is_task[n]:
             continue
-        # 0=compute, 1=switch, 2=link
-        ntype = str(int(node_feats[node_idx, :3].argmax()))
-        G.add_node(node_idx, ntype=ntype)
-
+        ntype = str(int(node_feats[n, :3].argmax()))
+        G.add_node(n, ntype=ntype)
     for e in range(hw_ei.shape[1]):
-        src, dst = int(hw_ei[0, e]), int(hw_ei[1, e])
-        G.add_edge(src, dst)
-
+        G.add_edge(int(hw_ei[0, e]), int(hw_ei[1, e]))
     return G
 
 
-def compute_wl_hash(G: nx.Graph) -> str:
+def compute_hw_wl(G: nx.Graph) -> str:
     """
-    Weisfeiler-Lehman graph hash.
-    Isomorphic graphs always produce the same WL hash.
-    Proven reliable for this dataset by exhaustive VF2 verification
-    of all 356,589 pairs across 390 isomorphic groups — 0 collisions.
+    Weisfeiler-Lehman hash of hardware-only graph.
+
+    Groups isomorphic hardware topologies together.
+    392 unique values confirmed by exhaustive VF2 verification
+    (356,589 pairs checked, 0 false positives).
+
+    NOTE: Two samples with the same WL hash may have different
+    physical wirings (different hw_md5) if their hardware subgraphs
+    are isomorphic but assign different structural roles to different
+    labeled nodes (e.g. N6 connecting to 2 switches vs 1 switch).
+    Whether WL or MD5 grouping is the right split level is an open
+    domain question — both hashes are stored.
     """
     return nx.weisfeiler_lehman_graph_hash(
         G, node_attr='ntype', iterations=WL_ITERATIONS
@@ -238,11 +245,11 @@ def compute_wl_hash(G: nx.Graph) -> str:
 def main():
     log("=" * 60)
     log("  STEP 1: Full Preprocessing -> HDF5")
-    log("  No sampling. All 144,255 graphs processed completely.")
-    log("  WL hash computed per unique MD5 hw hash (optimized).")
+    log("  Stores BOTH hw_md5_hashes and hw_wl_hashes.")
+    log("  See docstring for explanation of each hash.")
     log("=" * 60)
 
-    # 1. Load full CSV
+    # 1. Load CSV
     log(f"\n[1] Loading CSV: {CSV_PATH}")
     df        = pd.read_csv(CSV_PATH)
     df.set_index('CONFIG', inplace=True)
@@ -252,9 +259,9 @@ def main():
 
     log(f"  Rows        : {len(df):,}")
     log(f"  Time steps  : {N_TIME}  ({time_vals[0]:.0f}h - {time_vals[-1]:.0f}h)")
-    log(f"  R min / max : {df[time_cols].values.min():.6f} / "
+    log(f"  R min/max   : {df[time_cols].values.min():.6f} / "
         f"{df[time_cols].values.max():.6f}")
-    log(f"  NaN present : {df[time_cols].isnull().any().any()}")
+    log(f"  NaN         : {df[time_cols].isnull().any().any()}")
 
     log("  Building target lookup...")
     target_map = {
@@ -285,12 +292,12 @@ def main():
             else:
                 skipped_no_target.append(cid)
 
-    log(f"  Matched (have CSV target) : {len(matched_files):,}")
-    log(f"  Skipped (no CSV target)   : {len(skipped_no_target):,}")
+    log(f"  Matched : {len(matched_files):,}")
+    log(f"  Skipped : {len(skipped_no_target):,}")
     if skipped_no_target:
         log(f"  Skipped IDs: {sorted(skipped_no_target)}")
 
-    # 3. Parse ALL graphs
+    # 3. Parse ALL graphs — collect MD5 hw hashes
     log(f"\n[3] Parsing all {len(matched_files):,} graph files...")
     records      = []
     parse_errors = []
@@ -309,20 +316,18 @@ def main():
             node_feats = np.array(
                 [node_to_feature(nm) for nm in node_names],
                 dtype=np.float32
-            )  # [30, 5]
+            )
 
-            # Validate one-hot encoding
             row_sums = node_feats.sum(axis=1)
             if not np.all(row_sums == 1):
                 bad = [node_names[i] for i in np.where(row_sums != 1)[0]]
-                parse_errors.append((cid, f"Bad one-hot for: {bad}"))
+                parse_errors.append((cid, f"Bad one-hot: {bad}"))
                 continue
 
             rows, cols = np.nonzero(adj)
-            edge_idx   = np.vstack([rows, cols]).astype(np.int32)  # [2, E]
-
-            curve       = target_map[cid]
-            md5_hw      = compute_md5_hw_hash(edge_idx, node_feats)
+            edge_idx   = np.vstack([rows, cols]).astype(np.int32)
+            curve      = target_map[cid]
+            hw_md5     = compute_hw_md5(edge_idx, node_feats)
 
             records.append({
                 'config_id'    : cid,
@@ -330,7 +335,7 @@ def main():
                 'config_num'   : conf_num,
                 'curve_hash'   : md5_f32(curve),
                 'adj_hash'     : md5_f32(adj),
-                'md5_hw'       : md5_hw,       # temporary — used to compute WL
+                'hw_md5'       : hw_md5,
                 'node_names'   : node_names,
                 'node_features': node_feats,
                 'edge_index'   : edge_idx,
@@ -338,60 +343,60 @@ def main():
             })
 
     N_valid = len(records)
-    log(f"\n  Successfully parsed : {N_valid:,}")
-    log(f"  Parse errors        : {len(parse_errors):,}")
+    log(f"\n  Parsed OK : {N_valid:,}")
+    log(f"  Errors    : {len(parse_errors):,}")
     if parse_errors:
-        log("  Error details (first 20):")
         for cid, err in parse_errors[:20]:
             log(f"    {cid}: {err}")
-
     if N_valid == 0:
         log("ERROR: No valid samples. Aborting.")
         save_log()
         sys.exit(1)
 
-    # 4. Compute WL hashes — one per unique MD5 hw hash
-    log(f"\n[4] Computing WL hardware hashes (optimized by MD5)...")
+    # 4. Compute WL hash — once per unique MD5 hw hash (12x speedup)
+    log(f"\n[4] Computing WL hashes (optimized by MD5 hw hash)...")
 
-    # Collect one representative record per unique MD5 hw hash
     md5_to_record = {}
     for r in records:
-        md5 = r['md5_hw']
-        if md5 not in md5_to_record:
-            md5_to_record[md5] = r
+        if r['hw_md5'] not in md5_to_record:
+            md5_to_record[r['hw_md5']] = r
 
     n_unique_md5 = len(md5_to_record)
-    log(f"  Unique MD5 hw hashes   : {n_unique_md5:,}")
-    log(f"  WL computations needed : {n_unique_md5:,}  "
-        f"(vs {N_valid:,} without optimization)")
-    log(f"  Speedup factor         : {N_valid / n_unique_md5:.1f}x")
+    log(f"  Unique MD5 hw hashes : {n_unique_md5:,}  "
+        f"(expected {EXPECTED_UNIQUE_HW_MD5:,})")
+    log(f"  WL computations      : {n_unique_md5:,}  "
+        f"(vs {N_valid:,} without optimization, {N_valid/n_unique_md5:.1f}x speedup)")
 
-    # Compute WL hash for each unique MD5
     md5_to_wl = {}
     for md5, r in tqdm(md5_to_record.items(),
-                        desc="  Computing WL", unit="hw_config"):
-        G = build_hw_networkx_graph(r['edge_index'], r['node_features'])
-        md5_to_wl[md5] = compute_wl_hash(G)
+                        desc="  WL hashing", unit="wiring"):
+        G             = build_hw_nx_graph(r['edge_index'], r['node_features'])
+        md5_to_wl[md5] = compute_hw_wl(G)
 
-    # Propagate WL hash to all records
     for r in records:
-        r['hw_hash'] = md5_to_wl[r['md5_hw']]
+        r['hw_wl'] = md5_to_wl[r['hw_md5']]
 
     # Report unique counts
-    n_unique_curves = len(set(r['curve_hash'] for r in records))
-    n_unique_wl     = len(set(r['hw_hash']    for r in records))
-    n_unique_adj    = len(set(r['adj_hash']   for r in records))
+    n_uc  = len(set(r['curve_hash'] for r in records))
+    n_umd = len(set(r['hw_md5']    for r in records))
+    n_uwl = len(set(r['hw_wl']     for r in records))
+    n_ua  = len(set(r['adj_hash']  for r in records))
 
-    log(f"\n  Unique curve hashes (reliability behaviors) : {n_unique_curves:,}")
-    log(f"  Unique WL hw hashes (hardware layouts)      : {n_unique_wl:,}")
-    log(f"  Unique adj hashes   (full graph structures) : {n_unique_adj:,}")
-    log(f"  Expected WL unique  : 392 (VF2-proven)")
+    log(f"\n  Unique curve hashes   : {n_uc:,}  (expected {EXPECTED_UNIQUE_CURVES:,})")
+    log(f"  Unique hw MD5 hashes  : {n_umd:,}  (expected {EXPECTED_UNIQUE_HW_MD5:,})")
+    log(f"  Unique hw WL hashes   : {n_uwl:,}  (expected {EXPECTED_UNIQUE_HW_WL:,})")
+    log(f"  Unique adj hashes     : {n_ua:,}")
 
-    if n_unique_wl != 392:
-        log(f"  WARNING: Expected 392 unique WL hashes, got {n_unique_wl}.")
-        log(f"  This may indicate a WL iteration count issue or data change.")
-    else:
-        log(f"  WL unique count matches expected value. ✅")
+    # Warn if counts deviate from expected
+    for label, got, exp in [
+        ("curve hashes", n_uc,  EXPECTED_UNIQUE_CURVES),
+        ("hw MD5 hashes", n_umd, EXPECTED_UNIQUE_HW_MD5),
+        ("hw WL hashes",  n_uwl, EXPECTED_UNIQUE_HW_WL),
+    ]:
+        if got != exp:
+            log(f"  WARNING: Expected {exp:,} unique {label}, got {got:,}")
+        else:
+            log(f"  OK: {label} count matches expected. ✅")
 
     # 5. Write HDF5
     log(f"\n[5] Writing HDF5: {OUTPUT_PATH}")
@@ -400,17 +405,16 @@ def main():
 
     with h5py.File(OUTPUT_PATH, 'w') as h5:
 
-        # meta
         meta = h5.create_group('meta')
-        meta.create_dataset('config_ids',   (N_valid,),         dtype=str_dt)
-        meta.create_dataset('allocations',  (N_valid,),         dtype=str_dt)
-        meta.create_dataset('config_nums',  (N_valid,),         dtype=str_dt)
-        meta.create_dataset('curve_hashes', (N_valid,),         dtype=str_dt)
-        meta.create_dataset('adj_hashes',   (N_valid,),         dtype=str_dt)
-        meta.create_dataset('hw_hashes',    (N_valid,),         dtype=str_dt)
-        meta.create_dataset('node_names',   (N_valid, N_NODES), dtype=str_dt)
+        meta.create_dataset('config_ids',    (N_valid,),         dtype=str_dt)
+        meta.create_dataset('allocations',   (N_valid,),         dtype=str_dt)
+        meta.create_dataset('config_nums',   (N_valid,),         dtype=str_dt)
+        meta.create_dataset('curve_hashes',  (N_valid,),         dtype=str_dt)
+        meta.create_dataset('adj_hashes',    (N_valid,),         dtype=str_dt)
+        meta.create_dataset('hw_md5_hashes', (N_valid,),         dtype=str_dt)
+        meta.create_dataset('hw_wl_hashes',  (N_valid,),         dtype=str_dt)
+        meta.create_dataset('node_names',    (N_valid, N_NODES), dtype=str_dt)
 
-        # features
         feat_ds = h5.create_group('features').create_dataset(
             'node_features',
             shape=(N_valid, N_NODES, N_FEATURES),
@@ -419,7 +423,6 @@ def main():
             compression='gzip', compression_opts=4
         )
 
-        # targets
         tgt_ds = h5.create_group('targets').create_dataset(
             'y_curve',
             shape=(N_valid, N_TIME),
@@ -428,7 +431,6 @@ def main():
             compression='gzip', compression_opts=4
         )
 
-        # edges — CSR format
         log("  Assembling CSR edge structure...")
         all_edges = np.concatenate(
             [r['edge_index'] for r in records], axis=1
@@ -444,74 +446,70 @@ def main():
         edge_grp.create_dataset('edge_ptr', data=edge_ptr)
 
         log(f"  Total edges : {all_edges.shape[1]:,}")
-        log(f"  Mean E/graph: {all_edges.shape[1] / N_valid:.1f}")
+        log(f"  Mean E/graph: {all_edges.shape[1]/N_valid:.1f}")
 
-        # fill per-sample datasets
-        log("  Writing all samples to HDF5...")
+        log("  Writing samples...")
         for i, r in enumerate(tqdm(records, desc="  Writing", unit="sample")):
-            meta['config_ids'][i]   = r['config_id']
-            meta['allocations'][i]  = r['allocation']
-            meta['config_nums'][i]  = r['config_num']
-            meta['curve_hashes'][i] = r['curve_hash']
-            meta['adj_hashes'][i]   = r['adj_hash']
-            meta['hw_hashes'][i]    = r['hw_hash']
-            meta['node_names'][i]   = r['node_names']
-            feat_ds[i]              = r['node_features']
-            tgt_ds[i]               = r['y_curve']
+            meta['config_ids'][i]    = r['config_id']
+            meta['allocations'][i]   = r['allocation']
+            meta['config_nums'][i]   = r['config_num']
+            meta['curve_hashes'][i]  = r['curve_hash']
+            meta['adj_hashes'][i]    = r['adj_hash']
+            meta['hw_md5_hashes'][i] = r['hw_md5']
+            meta['hw_wl_hashes'][i]  = r['hw_wl']
+            meta['node_names'][i]    = r['node_names']
+            feat_ds[i]               = r['node_features']
+            tgt_ds[i]                = r['y_curve']
 
-        # file-level attributes
-        h5.attrs['time_values']   = time_vals
-        h5.attrs['n_samples']     = N_valid
-        h5.attrs['n_time_steps']  = N_TIME
-        h5.attrs['n_nodes']       = N_NODES
-        h5.attrs['n_features']    = N_FEATURES
-        h5.attrs['n_unique_hw']   = n_unique_wl
-        h5.attrs['n_unique_curves'] = n_unique_curves
+        h5.attrs['time_values']          = time_vals
+        h5.attrs['n_samples']            = N_valid
+        h5.attrs['n_time_steps']         = N_TIME
+        h5.attrs['n_nodes']              = N_NODES
+        h5.attrs['n_features']           = N_FEATURES
+        h5.attrs['n_unique_curves']      = n_uc
+        h5.attrs['n_unique_hw_md5']      = n_umd
+        h5.attrs['n_unique_hw_wl']       = n_uwl
 
     # 6. Verify
     log(f"\n[6] Verifying HDF5 integrity...")
     with h5py.File(OUTPUT_PATH, 'r') as h5:
-        log(f"  node_features shape  : {h5['features/node_features'].shape}")
-        log(f"  y_curve shape        : {h5['targets/y_curve'].shape}")
-        log(f"  edge_index shape     : {h5['edges/edge_index'].shape}")
-        log(f"  edge_ptr shape       : {h5['edges/edge_ptr'].shape}")
-        log(f"  config_ids[0]        : {h5['meta/config_ids'][0]}")
-        log(f"  allocation[0]        : {h5['meta/allocations'][0]}")
-        log(f"  curve_hash[0]        : {h5['meta/curve_hashes'][0]}")
-        log(f"  adj_hash[0]          : {h5['meta/adj_hashes'][0]}")
-        log(f"  hw_hash[0]           : {h5['meta/hw_hashes'][0]}")
-        log(f"  y_curve[0, :5]       : {h5['targets/y_curve'][0, :5]}")
-        log(f"  node_features[0,0,:] : {h5['features/node_features'][0,0,:]}")
+        log(f"  node_features : {h5['features/node_features'].shape}")
+        log(f"  y_curve       : {h5['targets/y_curve'].shape}")
+        log(f"  edge_index    : {h5['edges/edge_index'].shape}")
+        log(f"  config_ids[0] : {h5['meta/config_ids'][0]}")
+        log(f"  curve_hash[0] : {h5['meta/curve_hashes'][0]}")
+        log(f"  hw_md5[0]     : {h5['meta/hw_md5_hashes'][0]}")
+        log(f"  hw_wl[0]      : {h5['meta/hw_wl_hashes'][0]}")
+        log(f"  y_curve[0,:5] : {h5['targets/y_curve'][0, :5]}")
 
-        # Sanity checks
         ep = h5['edges/edge_ptr'][:]
         assert np.all(np.diff(ep) >= 0), "edge_ptr not monotonic!"
-        assert ep[0] == 0,               "edge_ptr does not start at 0!"
-        assert ep[-1] == h5['edges/edge_index'].shape[1], \
-            "edge_ptr end != total edges!"
-        log("  edge_ptr sanity      : PASSED")
+        assert ep[0] == 0
+        assert ep[-1] == h5['edges/edge_index'].shape[1]
+        log("  edge_ptr      : PASSED")
 
         y_min = h5['targets/y_curve'][:, 1:].min()
         y_max = h5['targets/y_curve'][:].max()
-        assert y_min >= 0.0 and y_max <= 1.0, "Reliability out of [0,1]!"
-        log(f"  y_curve range        : [{y_min:.6f}, {y_max:.6f}]  PASSED")
+        assert y_min >= 0.0 and y_max <= 1.0
+        log(f"  y_curve range : [{y_min:.6f}, {y_max:.6f}]  PASSED")
 
-        n_uc = len(set(h5['meta/curve_hashes'][:].astype(str)))
-        n_uh = len(set(h5['meta/hw_hashes'][:].astype(str)))
-        n_ua = len(set(h5['meta/adj_hashes'][:].astype(str)))
-        log(f"  Unique curve hashes  : {n_uc:,}  (expected 3,336)")
-        log(f"  Unique WL hw hashes  : {n_uh:,}  (expected 392)")
-        log(f"  Unique adj hashes    : {n_ua:,}  (expected 144,255)")
+        n_uc_v  = len(set(h5['meta/curve_hashes'][:].astype(str)))
+        n_umd_v = len(set(h5['meta/hw_md5_hashes'][:].astype(str)))
+        n_uwl_v = len(set(h5['meta/hw_wl_hashes'][:].astype(str)))
+        log(f"  Unique curves  : {n_uc_v:,}   (expected {EXPECTED_UNIQUE_CURVES:,})")
+        log(f"  Unique hw MD5  : {n_umd_v:,}  (expected {EXPECTED_UNIQUE_HW_MD5:,})")
+        log(f"  Unique hw WL   : {n_uwl_v:,}    (expected {EXPECTED_UNIQUE_HW_WL:,})")
 
-        assert n_uc == 3336, f"Expected 3336 unique curves, got {n_uc}"
-        assert n_uh == 392,  f"Expected 392 unique hw layouts, got {n_uh}"
-        log("  All hash counts      : PASSED")
+        assert n_uc_v  == EXPECTED_UNIQUE_CURVES, f"curve count mismatch"
+        assert n_umd_v == EXPECTED_UNIQUE_HW_MD5, f"hw md5 count mismatch"
+        assert n_uwl_v == EXPECTED_UNIQUE_HW_WL,  f"hw wl count mismatch"
+        log("  All counts     : PASSED ✅")
 
     size_mb = os.path.getsize(OUTPUT_PATH) / 1024 / 1024
-    log(f"\n  HDF5 file size : {size_mb:.1f} MB")
-    log(f"  Valid samples  : {N_valid:,}")
-    log(f"  Parse errors   : {len(parse_errors):,}")
-    log(f"\n✅ Preprocessing complete. Dataset saved to: {OUTPUT_PATH}")
+    log(f"\n  File size : {size_mb:.1f} MB")
+    log(f"  Samples   : {N_valid:,}")
+    log(f"  Errors    : {len(parse_errors):,}")
+    log(f"\n✅ Preprocessing complete: {OUTPUT_PATH}")
     save_log()
 
 

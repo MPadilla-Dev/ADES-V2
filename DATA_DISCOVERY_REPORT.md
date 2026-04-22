@@ -10,7 +10,7 @@
 
 Following your email regarding graph isomorphism and the `is_equal` function in `config.py`, we conducted a thorough analysis of the dataset structure before beginning model training. This report documents our findings from the data exploration phase and outlines the experimental plan for the GNN training phase.
 
-Your note about isomorphism turned out to be one of the most important observations of the entire analysis. We detail the findings in Section 4.
+Your note about isomorphism turned out to be one of the most consequential observations of the entire analysis. We spent considerable effort understanding what "same hardware" means in this dataset, and we have an open question for you in Section 4 that directly affects our interpretation of results — though we have designed the experiments to answer it empirically as well.
 
 ---
 
@@ -25,11 +25,11 @@ The dataset consists of two raw sources:
 
 **Graph structure:** Every graph has exactly 30 nodes with a fixed composition:
 
-| Node type | Count | Naming |
+| Node type | Count | Naming convention |
 |---|---|---|
 | Compute nodes | 6 | N1 – N6 |
 | Switch nodes | 3 | S1 – S3 |
-| Link nodes | 15 | N1S1, S1S2, ... (device pair fused) |
+| Link nodes | 15 | N1S1, S1S2 ... (device pair fused into name) |
 | Task nodes | 6 | T1\_1, T1\_2, T1\_3, T2\_4, T2\_5, T2\_6 |
 
 Task nodes are actual graph nodes connected to compute nodes. Different task allocations produce genuinely different adjacency matrices — allocation is a **structural variable**, not just a label.
@@ -38,80 +38,89 @@ Task nodes are actual graph nodes connected to compute nodes. Different task all
 
 ## 3. Storage Format — HDF5
 
-The raw data (144k individual text files inside a zip archive) creates a severe problem on Puhti's Lustre filesystem. Lustre is optimised for large sequential reads, not for opening thousands of small files. During training, a naive dataloader that opens one file per sample per batch would issue millions of metadata requests to the filesystem, degrading performance for all users and likely getting the job throttled.
+The raw data consists of 144k individual text files inside a zip archive. This creates a serious problem on Puhti's Lustre parallel filesystem, which is optimised for large sequential reads, not for opening thousands of small files. During training, a naive dataloader opening one file per sample per batch would issue millions of metadata requests to Lustre, degrading performance for all users.
 
-We convert the entire dataset to a single HDF5 (`.h5`) file. HDF5 is the standard format for large scientific datasets on HPC systems. It provides:
-
-- **Random access by integer index** — retrieving sample 47,821 takes the same time as retrieving sample 0
-- **Memory mapping** — the file never needs to be fully loaded into RAM
-- **Compression** — node features and reliability curves are gzip-compressed, reducing disk footprint
-- **Flexible querying** — any grouping (by allocation, by hardware type, by curve behavior) can be computed at runtime from the stored metadata without reorganising the files
-
-The HDF5 file stores for each of the 144,255 samples:
-
-```
-meta/config_ids      — "0000_0736"
-meta/allocations     — "0000"
-meta/config_nums     — "0736"
-meta/curve_hashes    — MD5 of reliability curve (for split grouping)
-meta/hw_hashes       — Weisfeiler-Lehman hash of hardware graph (see Section 4)
-meta/node_names      — ["N1", "N1S1", ..., "T1_1"] (preserved for analysis)
-features/node_features  — [30 × 5] one-hot node type matrix
-edges/edge_index     — all edges in CSR format
-targets/y_curve      — [221] full reliability curve, float32
-```
+We convert the entire dataset to a single HDF5 file. HDF5 provides random access by integer index, memory mapping (the file is never fully loaded into RAM), gzip compression, and flexible querying by any stored metadata field without reorganising files. All grouping variables needed for splitting — curve hash, allocation, hardware MD5, hardware WL — are stored as indexed string arrays so any split can be computed at runtime in seconds.
 
 ---
 
-## 4. Hardware Configuration Analysis and Graph Isomorphism
+## 4. Hardware Configuration Analysis and the Isomorphism Question
 
-### 4.1 The Isomorphism Problem
+### 4.1 Two Levels of Hardware Equivalence
 
-Following your suggestion, we investigated whether different graph files represent truly distinct hardware configurations or whether some are isomorphic — structurally identical with different node numbering.
+Following your suggestion about isomorphism, we investigated what "same hardware" means in this dataset. We found two defensible definitions that give different answers, and we have designed our experiments to answer empirically which is the more meaningful abstraction.
 
-We first stripped task node edges from every graph (keeping only compute, switch, and link connectivity) and computed MD5 hashes of the resulting edge sets. This produced **11,903 apparently unique hardware configurations**. However, MD5 hashing is not isomorphism-aware — two isomorphic graphs with different node numbering produce different MD5 hashes.
+**Definition A — Same physical wiring (MD5 hash, 11,903 groups):**
+Two configurations have the same hardware if their adjacency matrices are identical after removing task node edges. This means exactly the same compute-to-switch and switch-to-switch connections, regardless of task placement.
 
-### 4.2 Weisfeiler-Lehman Graph Hash
+**Definition B — Same hardware topology class (WL hash, 392 groups):**
+Two configurations have the same hardware if their hardware subgraphs are isomorphic — same abstract topology at the node-type level (same degree sequence for compute / switch / link nodes), even if different specific labeled nodes fill different structural roles.
 
-We used the **Weisfeiler-Lehman (WL) graph hash** to detect isomorphic graphs. WL hashing works by iteratively aggregating neighbourhood information at each node and producing a canonical fingerprint. Two graphs that are isomorphic (i.e. identical up to node relabelling) always produce the same WL hash. We include node type (compute / switch / link) as a node attribute so the hash is type-aware — a compute node cannot be confused with a switch node.
+### 4.2 The Isomorphism Verification
 
-**Optimisation:** Building a NetworkX graph and running WL for all 144,255 samples would be expensive. We first grouped by MD5 hash (since non-isomorphic graphs always differ in MD5), then ran WL once per unique MD5 group (11,903 computations instead of 144,255 — a 12x speedup).
+We computed Weisfeiler-Lehman graph hashes on hardware-only subgraphs (task edges stripped, node type as attribute) and found 392 unique topology groups — a 30x reduction from the 11,903 physical wiring groups. We exhaustively verified this using the VF2 algorithm on all 356,589 pairwise combinations within WL groups. **Zero false positives — 392 is mathematically exact.**
 
-### 4.3 Exhaustive VF2 Verification
+### 4.3 The Problem: Isomorphic Hardware, Different Curves
 
-WL hashing is not a mathematically perfect isomorphism test in the general case — rare collisions can occur. To ensure correctness we verified every WL group using the **VF2 algorithm**, which is an exact isomorphism test. We checked all **356,589 pairwise combinations** across all 390 WL groups that contained more than one MD5 hash.
+Within a single WL topology group and the same allocation, configurations can produce different reliability curves. We investigated two specific cases: `0000_0348` and `0000_0495`.
 
-**Result: 0 false positives. 392 is the exact count of truly unique hardware layouts.**
+![Config Comparison](results/02_eda_deep/config_comparison_highlighted.png)
+*Both configurations belong to the same WL topology group and the same allocation (0000). Red solid edges exist only in `0000_0348`. Blue dashed edges exist only in `0000_0495`. Black rings highlight nodes involved in differing edges. Their reliability curves differ by 0.00144535 at t=8,000h.*
+
+**Key observation:** In `0000_0348`, compute node N6 connects to **two switches**. In `0000_0495`, N6 connects to **only one switch**. Since all six tasks (T1\_1 through T2\_6) connect to N6 in this allocation, N6's switch connectivity determines the redundancy of the entire task communication path.
+
+**The hardware type-degree signatures are identical:**
+
+| Node type | Degree | Count in 0000_0348 | Count in 0000_0495 |
+|---|---|---|---|
+| compute | 0 | 1 | 1 |
+| compute | 1 | 3 | 3 |
+| compute | 2 | 2 | 2 |
+| switch | 3 | 1 | 1 |
+| switch | 4 | 2 | 2 |
+
+Both have the same abstract topology — the WL hash correctly identifies them as isomorphic at the type level. But the specific node with two switch connections matters because it is the task host.
+
+### 4.4 Full Graph Verification
+
+WL hashes on the full 30-node graphs including task edges:
 
 ```
-11,903  MD5 hardware hashes (isomorphism-unaware)
-   392  WL hardware hashes  (VF2-verified exact count)
+Unique full-graph WL hashes : 144,255  (one per sample — every graph unique)
+Full WL groups with >1 curve: 0        (every unique graph → one unique curve)
 ```
 
-The 11,503 excess MD5 hashes were all isomorphic copies of one of the 392 layouts with different node numbering.
+The reliability simulation is fully deterministic from the graph structure. Identical graphs always produce identical curves.
 
-### 4.4 Dataset Structure Revealed
+### 4.5 Open Question for the Domain Expert
 
-With the correct hardware count, the true dataset structure is:
+We have identified that WL-isomorphic hardware configurations under the same allocation can produce different reliability curves. The curve difference comes from different specific wiring of the task-hosting compute node to the switch network.
 
-```
-144,255 samples
-  └── 392 unique hardware layouts  (VF2-proven)
-        └── average 12.1 task allocations tested per layout
-              └── average 30.9 unique reliability curves per layout
-                    = 3,336 unique reliability behaviors total
-```
+**The question is:** In the CTMC model, do all compute nodes (N1 through N6) have **identical failure rates and physical properties**?
 
-![Task Sensitivity Scatter](results/02_eda_deep/04_task_sensitivity_scatter.png)
-*Each point is one of the 392 hardware layouts. x-axis: number of allocations tested. y-axis: unique reliability curves produced. Color: mean reliability at t=8,000h. Layouts in the upper right are the most task-sensitive — the same hardware produces very different reliability depending on task placement.*
+- If **yes** — two configurations differing only in which labeled compute node fills a structural role should produce identical reliability. The curve difference we observe (0.00144535) would suggest the WL topology class is too coarse, and MD5 physical wiring is the correct hardware identity.
+
+- If **no** — node labels carry physical meaning, and the curve difference is expected. MD5 physical wiring remains the correct hardware identity.
+
+We have stored both hashes in the dataset and designed experiments using both split levels, so results will be available empirically regardless of the answer.
 
 ---
 
 ## 5. Key EDA Findings
 
-### 5.1 Reliability Curve Distribution
+### 5.1 Dataset Structure
 
-All curves start at exactly R=1.0 at t=0h and decay monotonically. The spread of reliability values at different time points:
+```
+144,255 samples
+  ├── 31 task allocations  (8 functional symmetry groups)
+  ├── 11,903 unique hardware wirings  (MD5, task edges stripped)
+  ├── 392 unique hardware topology classes  (WL, VF2-verified)
+  └── 3,336 unique reliability curves
+```
+
+Task allocation explains **73% of overall reliability variance**. For the same physical hardware, changing which task runs on which compute node produces reliability variation that is 73% as large as varying the hardware entirely.
+
+### 5.2 Reliability Curve Distribution
 
 | Time | Min R | Mean R | Max R | Fraction < 0.9 |
 |---|---|---|---|---|
@@ -120,57 +129,32 @@ All curves start at exactly R=1.0 at t=0h and decay monotonically. The spread of
 | 8,000h | 0.625 | 0.827 | 0.981 | 88.3% |
 | 22,000h | 0.275 | 0.585 | 0.883 | 100.0% |
 
-The "nines" classification scheme used in previous work (binning by 0.9, 0.99, 0.999...) is not applicable to this dataset at the full time range — all 144,255 samples fall below 0.9 by t=22,000h. Classification into nines bins was only meaningful within the narrow 0–8,500h window used in earlier experiments, and was measuring a heavily skewed distribution.
+The "nines" classification scheme used in previous work is not applicable at the full time range — all samples fall below 0.9 by t=22,000h. We use regression on the full curve instead.
 
-![All Unique Curves](results/02_eda_deep/07_curve_families.png)
-*All 3,336 unique reliability curves. Color indicates reliability at t=8,000h (green = high, red = low). The fan shape shows the full diversity of degradation behaviors.*
-
-### 5.2 Massive Curve Redundancy
+### 5.3 Massive Curve Redundancy
 
 ```
 144,255 total samples
-  3,336 unique reliability curves  (2.3% of samples)
-140,919 exact duplicates           (97.7% of samples)
+  3,336 unique reliability curves  (2.3%)
+140,919 exact duplicates           (97.7%)
 ```
 
-Many different graph topologies produce the same reliability curve. This is physically correct — many hardware configurations achieve equivalent redundancy through different physical layouts. This has a critical implication for model evaluation: **train/test splits must be performed at the curve level**, not the sample level. If samples sharing a curve hash are split across train and test, the model is evaluated on reliability values it has already seen during training.
-
-### 5.3 Task Allocation Explains 73% of Reliability Variance
-
-For a given hardware layout, varying only the task allocation (which task runs on which compute node) produces reliability variation that is **73% as large as the variation across all hardware layouts combined**.
-
-```
-Overall R(8000h) standard deviation         : 0.0588
-Mean R(8000h) std within one hardware layout: 0.0430  (73% of overall)
-```
-
-This reframes the problem: the model is primarily learning **task-placement → reliability**, not **hardware design → reliability**. Task assignment is the dominant driver of system reliability.
+Many different graph topologies produce identical reliability curves — physically correct, reflecting equivalent redundancy through different structural paths. Train/test splits must be performed at the curve-hash level to prevent target leakage.
 
 ### 5.4 Curve Crossings — Static Ranking Is Impossible
 
-We performed a full pairwise comparison of all 3,336 unique curves (5,562,780 pairs), excluding t=0 (universal anchor) and applying a minimum difference threshold of 0.01.
-
-```
-Crossing pairs found : 704,960  (crossing rate: 13.03%)
-
-Depth distribution:
-  shallow  (diff 0.01–0.05): 62.0%
-  moderate (diff 0.05–0.10): 26.9%
-  deep     (diff > 0.10)   : 11.1%
-```
-
-**38% of crossing pairs are moderate or deep** — meaning the best configuration genuinely depends on the operating time horizon. A system that is more reliable at t=4,000h may be less reliable at t=15,000h.
+Full pairwise comparison of all 3,336 unique curves found a crossing rate of **13.03%**. Of crossing pairs, 38% are moderate or deep (maximum difference > 0.05). A system that is more reliable at t=4,000h may be less reliable at t=15,000h.
 
 ![Crossing Examples](results/02_eda_deep/10_crossing_examples.png)
-*Six crossing examples spanning early (< 5,000h), mid (5,000–12,000h), and late (> 12,000h) crossover times. Shading shows which curve is genuinely higher in each region. Insets zoom around the crossover point. This is the primary justification for full-curve regression over single-point prediction.*
+*Six crossing examples spanning early (< 5,000h), mid (5,000–12,000h), and late (> 12,000h) crossover times. Shading shows which configuration is genuinely better in each region. Insets zoom around the crossover point.*
 
-**Consequence:** A static ranking of configurations cannot answer "which is best?" because the answer depends on the intended operating lifetime. This rules out lookup-table approaches and confirms the need for a model that predicts the full reliability curve.
+A static ranking cannot answer "which configuration is best?" because the answer depends on the intended operating lifetime. Full-curve regression is required.
 
-### 5.5 Allocation Structure and Symmetry Groups
+### 5.5 Allocation Symmetry Groups
 
-The 31 task allocations are not 31 independent strategies. They form **symmetry groups** — allocations that produce the same set of reliability behaviors, differing only in which node carries which label:
+The 31 allocations form 8 functional equivalence classes:
 
-| Unique curves per allocation | Allocations in this group |
+| Unique curves | Allocations |
 |---|---|
 | 133 | 0002, 0004, 0005, 0010, 0012, 0014, 0015, 0016, 0018, 0019 |
 | 388 | 0000, 0001, 0007, 0008, 0009 |
@@ -181,14 +165,12 @@ The 31 task allocations are not 31 independent strategies. They form **symmetry 
 | 969 | 0027 |
 | 504 | 0030 |
 
-The 31 allocations collapse into **8 functionally distinct allocation strategies**.
-
 ### 5.6 Architectural Correlation
 
-Task concentration — how many distinct compute nodes carry task connections — is the strongest structural predictor of reliability behavior. Systems where tasks are concentrated on few compute nodes degrade more steadily. Systems where tasks are distributed across many compute nodes show more complex degradation patterns with accelerating late decline.
+Task concentration — how many distinct compute nodes carry task connections — is the strongest structural predictor of reliability behavior. This is consistent with the N6 finding: when all tasks connect to a single compute node, that node's switch connectivity becomes the dominant reliability factor.
 
 ![Architectural Correlation](results/02_eda_deep/14_architectural_correlation.png)
-*Scatter plots of four architectural features against mean reliability at t=8,000h. Pearson correlation coefficients quantify each relationship. Task concentration and N compute nodes with tasks show the clearest correlation.*
+*Scatter plots of structural features against mean reliability at t=8,000h with Pearson correlation coefficients and trend lines.*
 
 ---
 
@@ -196,66 +178,59 @@ Task concentration — how many distinct compute nodes carry task connections �
 
 ### 6.1 Target Formulation
 
-Two regression targets will be evaluated:
+Two regression targets:
 
-**Target A — Single timestep regression:** Predict R at t=8,000h (one scalar output). This is the simplest baseline, fast to train, and provides a lower bound on model capability. It cannot correctly handle crossing pairs.
+**Target A — Single timestep:** Predict R at t=8,000h (one output). Fast baseline. Cannot handle crossings correctly.
 
-**Target B — Full curve regression:** Predict all 221 reliability values simultaneously (221 scalar outputs, MSE loss). This is the primary formulation — the only one that correctly captures the full degradation trajectory and handles crossings.
+**Target B — Full curve:** Predict all 221 reliability values simultaneously (MSE loss). Primary formulation. Required for crossing-aware evaluation.
 
-### 6.2 Split Strategy
+### 6.2 Split Strategy — Four Axes
 
-Three split axes correspond to three scientific questions of increasing difficulty:
+Each split axis answers a different scientific question. The gap in accuracy between split levels is itself a finding — it quantifies what the model has actually learned.
 
-| Split | Definition | Scientific Question |
+| Split | Groups | Scientific Question |
 |---|---|---|
-| **Curve-hash** | All samples sharing a curve hash go to the same side | Can the model predict reliability values it has never seen? |
-| **Allocation** | 4 held-out allocations (0009, 0013, 0025, 0019) never appear in training | Can the model generalise to completely new task assignment strategies? |
-| **Hardware (WL)** | ~20% of 392 hardware layouts held out entirely | Can the model generalise to physically unseen hardware architectures? |
+| **Curve-hash** | 3,336 | Can the model predict reliability values it has never seen? |
+| **Allocation** | 31 (8 functional) | Can the model generalise to completely unseen task strategies? |
+| **Hardware wiring (MD5)** | 11,903 | Can the model generalise to unseen physical wirings? |
+| **Hardware topology (WL)** | 392 | Can the model generalise to unseen hardware topology classes? |
 
-The gap between allocation accuracy and hardware accuracy measures how much the model relies on hardware recognition versus task-placement reasoning.
+The accuracy gap between MD5 and WL hardware splits will answer the open question from Section 4.5 empirically — if WL accuracy ≈ MD5 accuracy, the topology class is the right abstraction and WL isomorphism is physically meaningful. If WL accuracy is substantially lower, specific wiring details matter beyond topology class and MD5 is the correct hardware identity.
 
-### 6.3 Model Architecture
-
-Baseline architecture carried forward from previous intake: **GAT\_LN\_HEAD** — Graph Attention Network with LayerNorm and 8 attention heads.
-
-```
-GATConv(input_dim=5, hidden=64, heads=8)  →  LayerNorm  →  ReLU
-GATConv(512, 32, heads=8)                 →  LayerNorm  →  Dropout(0.3)
-global_mean_pool  →  Linear(256, output_dim)
-```
-
-For Target A: `output_dim = 1`, loss = MSE  
-For Target B: `output_dim = 221`, loss = MSE
-
-### 6.4 Experiment Table
+### 6.3 Experiment Table
 
 | # | Model | Target | Split | Status | Notes |
 |---|---|---|---|---|---|
-| 1 | GAT\_LN\_HEAD | R(8000h) — single timestep | Curve-hash | Pending | Baseline |
+| 1 | GAT\_LN\_HEAD | R(8,000h) | Curve-hash | Pending | Simplest baseline |
 | 2 | GAT\_LN\_HEAD | Full curve (221 pts) | Curve-hash | Pending | Main experiment |
-| 3 | GAT\_LN\_HEAD | R(8000h) — single timestep | Allocation | Pending | Task generalisation |
+| 3 | GAT\_LN\_HEAD | R(8,000h) | Allocation | Pending | Task generalisation |
 | 4 | GAT\_LN\_HEAD | Full curve (221 pts) | Allocation | Pending | Task generalisation |
-| 5 | GAT\_LN\_HEAD | R(8000h) — single timestep | Hardware (WL) | Pending | Hardware generalisation |
-| 6 | GAT\_LN\_HEAD | Full curve (221 pts) | Hardware (WL) | Pending | Strictest test |
+| 5 | GAT\_LN\_HEAD | Full curve (221 pts) | Hardware wiring (MD5) | Pending | Exact wiring generalisation |
+| 6 | GAT\_LN\_HEAD | Full curve (221 pts) | Hardware topology (WL) | Pending | Topology class generalisation |
 
-Results will be reported as MSE and MAE on the held-out set, along with the crossing accuracy — for crossing pairs, what fraction does the model correctly rank?
+Experiments 5 and 6 use full curve only since baseline single-timestep is already covered by experiments 1–2. The accuracy gap between experiments 5 and 6 directly answers whether WL topology classes are physically meaningful hardware equivalence classes.
+
+Results will be reported as MSE and MAE on the held-out set, plus crossing accuracy — for crossing pairs, what fraction does the model correctly rank for a given operating lifetime?
 
 ---
 
-## 7. Pipeline Summary
+## 7. Pipeline Status
 
 ```
 src/scripts/
-├── 00_verify_data.py       ✅ Done  — integrity check on raw data
-├── 01_preprocess.py        ✅ Done  — raw zip + csv → dataset.h5
-│                                      (WL hardware hashes, VF2-verified)
-├── verify_wl_exhaustive.py ✅ Done  — 356,589 VF2 pairs, 0 collisions
-├── 02_eda_deep.py          ✅ Done  — full EDA, all plots above
-├── 03_split.py             ⏳ Next  — produce splits.json (3 split axes)
-├── 04_train.py             ⏳ Next  — GNN training
-└── 05_evaluate.py          ⏳ Next  — evaluation on all 3 test sets
+├── 00_verify_data.py         ✅ Done — raw data integrity check
+├── 01_preprocess.py          ✅ Done — raw data → dataset.h5
+│                                       stores curve_hashes,
+│                                       hw_md5_hashes (11,903),
+│                                       hw_wl_hashes (392, VF2-verified)
+├── verify_wl_exhaustive.py   ✅ Done — 356,589 VF2 pairs, 0 collisions
+├── 02_eda_deep.py            ✅ Done — full EDA, all plots above
+├── 03_split.py               ⏳ Next — produce splits.json
+│                                       (curve, allocation, MD5, WL axes)
+├── 04_train.py               ⏳ Pending
+└── 05_evaluate.py            ⏳ Pending
 ```
 
 ---
 
-*All plots, scripts, and data documentation are available in the [ADES-v2 repository](https://github.com/MPadilla-Dev/ADES-V2). The dataset itself lives on Puhti scratch and is not committed to git.*
+*All scripts and documentation are in the [ADES-v2 repository](https://github.com/MPadilla-Dev/ADES-V2). The dataset lives on Puhti scratch and is not committed to git.*
