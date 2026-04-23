@@ -272,7 +272,7 @@ src/scripts/
 ├── verify_wl_exhaustive.py   ✅ Done — 356,589 VF2 pairs, 0 collisions
 ├── 02_eda_deep.py            ✅ Done — full EDA including hardware hash
 │                                       summary and config comparison
-├── 03_split.py               ⏳ Next — produce splits.json
+├── 03_split.py               ✅ Done — produce splits.json
 │                                       (curve, allocation, MD5, WL axes)
 ├── 04_train.py               ⏳ Pending
 └── 05_evaluate.py            ⏳ Pending
