@@ -51,10 +51,13 @@ We convert the entire dataset to a single HDF5 file. HDF5 provides random access
 Following your suggestion about isomorphism, we investigated what "same hardware" means in this dataset. We found two defensible definitions that give different answers, and we have designed our experiments to answer empirically which is the more meaningful abstraction.
 
 **Definition A — Same physical wiring (MD5 hash, 11,903 groups):**
-Two configurations have the same hardware if their adjacency matrices are identical after removing task node edges. This means exactly the same compute-to-switch and switch-to-switch connections, regardless of task placement.
+Two configurations have the same hardware if their adjacency matrices are identical after removing task node edges. This means exactly the same compute-to-switch and switch-to-switch connections, regardless of task placement. Within an MD5 group, curves vary only because different task allocations place tasks on differently-connected compute nodes.
 
 **Definition B — Same hardware topology class (WL hash, 392 groups):**
-Two configurations have the same hardware if their hardware subgraphs are isomorphic — same abstract topology at the node-type level (same degree sequence for compute / switch / link nodes), even if different specific labeled nodes fill different structural roles.
+Two configurations have the same hardware if their hardware subgraphs are isomorphic — same abstract topology at the node-type level (same degree sequence for compute / switch / link nodes), even if different specific labeled nodes fill different structural roles. Within a WL group, curves can vary from both task allocation differences AND from wiring differences between configs in the same topology class.
+
+![Hardware Hash Summary](results/02_eda_deep/03_hardware_hash_summary.png)
+*Top row: unique curves produced per group at each hash level. MD5 groups (blue) produce at most 15 unique curves, all from task allocation variation. WL groups (orange) produce up to 122 unique curves, from both task allocation and wiring differences within the topology class. Bottom row: allocations tested per group at each level.*
 
 ### 4.2 The Isomorphism Verification
 
@@ -64,10 +67,10 @@ We computed Weisfeiler-Lehman graph hashes on hardware-only subgraphs (task edge
 
 Within a single WL topology group and the same allocation, configurations can produce different reliability curves. We investigated two specific cases: `0000_0348` and `0000_0495`.
 
-![Config Comparison](results/02_eda_deep/config_comparison_highlighted.png)
+![Config Comparison](results/02_eda_deep/06_config_comparison.png)
 *Both configurations belong to the same WL topology group and the same allocation (0000). Red solid edges exist only in `0000_0348`. Blue dashed edges exist only in `0000_0495`. Black rings highlight nodes involved in differing edges. Their reliability curves differ by 0.00144535 at t=8,000h.*
 
-**Key observation:** In `0000_0348`, compute node N6 connects to **two switches**. In `0000_0495`, N6 connects to **only one switch**. Since all six tasks (T1\_1 through T2\_6) connect to N6 in this allocation, N6's switch connectivity determines the redundancy of the entire task communication path.
+**Key observation:** In `0000_0348`, compute node N6 connects to **two switches**. In `0000_0495`, N6 connects to **only one switch**. Since all six tasks (T1\_1 through T2\_6) connect to N6 in this allocation, N6's switch connectivity determines the redundancy of the entire task communication path. Two switch connections provide more redundancy than one, producing higher reliability.
 
 **The hardware type-degree signatures are identical:**
 
@@ -79,7 +82,7 @@ Within a single WL topology group and the same allocation, configurations can pr
 | switch | 3 | 1 | 1 |
 | switch | 4 | 2 | 2 |
 
-Both have the same abstract topology — the WL hash correctly identifies them as isomorphic at the type level. But the specific node with two switch connections matters because it is the task host.
+Both have the same abstract topology — the WL hash correctly identifies them as isomorphic at the type level. But the specific node with two switch connections is the task host, and its connectivity to the switch network is the dominant reliability factor.
 
 ### 4.4 Full Graph Verification
 
@@ -90,7 +93,7 @@ Unique full-graph WL hashes : 144,255  (one per sample — every graph unique)
 Full WL groups with >1 curve: 0        (every unique graph → one unique curve)
 ```
 
-The reliability simulation is fully deterministic from the graph structure. Identical graphs always produce identical curves.
+The reliability simulation is fully deterministic from the complete graph structure. Identical graphs always produce identical curves.
 
 ### 4.5 Open Question for the Domain Expert
 
@@ -98,7 +101,7 @@ We have identified that WL-isomorphic hardware configurations under the same all
 
 **The question is:** In the CTMC model, do all compute nodes (N1 through N6) have **identical failure rates and physical properties**?
 
-- If **yes** — two configurations differing only in which labeled compute node fills a structural role should produce identical reliability. The curve difference we observe (0.00144535) would suggest the WL topology class is too coarse, and MD5 physical wiring is the correct hardware identity.
+- If **yes** — two configurations differing only in which labeled compute node fills a structural role should produce identical reliability. The curve difference we observe (0.00144535) would suggest the WL topology class is too coarse, and the MD5 physical wiring (11,903 groups) is the correct hardware identity.
 
 - If **no** — node labels carry physical meaning, and the curve difference is expected. MD5 physical wiring remains the correct hardware identity.
 
@@ -129,7 +132,7 @@ Task allocation explains **73% of overall reliability variance**. For the same p
 | 8,000h | 0.625 | 0.827 | 0.981 | 88.3% |
 | 22,000h | 0.275 | 0.585 | 0.883 | 100.0% |
 
-The "nines" classification scheme used in previous work is not applicable at the full time range — all samples fall below 0.9 by t=22,000h. We use regression on the full curve instead.
+The "nines" classification scheme used in previous work is not applicable at the full time range — all samples fall below 0.9 by t=22,000h. We use regression instead.
 
 ### 5.3 Massive Curve Redundancy
 
@@ -148,7 +151,7 @@ Full pairwise comparison of all 3,336 unique curves found a crossing rate of **1
 ![Crossing Examples](results/02_eda_deep/10_crossing_examples.png)
 *Six crossing examples spanning early (< 5,000h), mid (5,000–12,000h), and late (> 12,000h) crossover times. Shading shows which configuration is genuinely better in each region. Insets zoom around the crossover point.*
 
-A static ranking cannot answer "which configuration is best?" because the answer depends on the intended operating lifetime. Full-curve regression is required.
+A static ranking cannot answer "which configuration is best?" because the answer depends on the intended operating lifetime. This motivates the time-conditioned regression formulation described in Section 6.
 
 ### 5.5 Allocation Symmetry Groups
 
@@ -170,23 +173,63 @@ The 31 allocations form 8 functional equivalence classes:
 Task concentration — how many distinct compute nodes carry task connections — is the strongest structural predictor of reliability behavior. This is consistent with the N6 finding: when all tasks connect to a single compute node, that node's switch connectivity becomes the dominant reliability factor.
 
 ![Architectural Correlation](results/02_eda_deep/14_architectural_correlation.png)
-*Scatter plots of structural features against mean reliability at t=8,000h with Pearson correlation coefficients and trend lines.*
+*Scatter plots of structural features against mean reliability at t=8,000h with Pearson correlation coefficients and trend lines. Color = late/early degradation slope ratio.*
 
 ---
 
 ## 6. Experimental Plan
 
-### 6.1 Target Formulation
+### 6.1 Target Formulations
 
-Two regression targets:
+We evaluate three prediction formulations, ordered from primary to supplementary:
 
-**Target A — Single timestep:** Predict R at t=8,000h (one output). Fast baseline. Cannot handle crossings correctly.
+---
 
-**Target B — Full curve:** Predict all 221 reliability values simultaneously (MSE loss). Primary formulation. Required for crossing-aware evaluation.
+**Primary — Time-Conditioned Regression**
+
+The model predicts R at a single queried timestep t, where t is provided as an additional node feature. Every node in the graph receives the same t value appended to its 5-dimensional type encoding, making the input 6-dimensional. During training, t is sampled randomly from the 221 available timesteps for each graph in each batch.
+
+```
+Input  : graph + t (injected as node feature)
+Output : R(t)  — one scalar
+Loss   : MSE
+```
+
+This formulation directly answers the practical question the system is designed for: *"given this hardware-allocation combination and an intended operating lifetime t, how reliable is it?"* It learns the full degradation curve implicitly across training epochs without needing to predict all 221 points simultaneously. It also handles the crossing problem naturally — queried at the specific t relevant to the deployment context, it gives the correct ranking for that lifetime. This is the closest formulation to the approach used in the previous intake.
+
+---
+
+**Supplementary A — Full Curve Regression**
+
+The model predicts all 221 reliability values simultaneously in a single forward pass.
+
+```
+Input  : graph only
+Output : [R(0), R(100), ..., R(22000)]  — 221 scalars
+Loss   : MSE over all timesteps
+```
+
+This is the richest single-pass formulation. It explicitly captures the curve shape including crossings, but requires a 221-dimensional output head and provides 221× more gradient signal per sample which can help or hurt optimisation.
+
+---
+
+**Supplementary B — Single Timestep Regression**
+
+The model predicts R at one fixed timestep (t=8,000h).
+
+```
+Input  : graph only
+Output : R(8000h)  — one scalar
+Loss   : MSE
+```
+
+Simple baseline. Cannot handle crossings that occur before or after 8,000h.
+
+---
 
 ### 6.2 Split Strategy — Four Axes
 
-Each split axis answers a different scientific question. The gap in accuracy between split levels is itself a finding — it quantifies what the model has actually learned.
+Each split axis answers a different scientific question. The accuracy gap between levels is itself a scientific finding.
 
 | Split | Groups | Scientific Question |
 |---|---|---|
@@ -195,22 +238,25 @@ Each split axis answers a different scientific question. The gap in accuracy bet
 | **Hardware wiring (MD5)** | 11,903 | Can the model generalise to unseen physical wirings? |
 | **Hardware topology (WL)** | 392 | Can the model generalise to unseen hardware topology classes? |
 
-The accuracy gap between MD5 and WL hardware splits will answer the open question from Section 4.5 empirically — if WL accuracy ≈ MD5 accuracy, the topology class is the right abstraction and WL isomorphism is physically meaningful. If WL accuracy is substantially lower, specific wiring details matter beyond topology class and MD5 is the correct hardware identity.
+The accuracy gap between MD5 and WL splits empirically answers the open question from Section 4.5.
 
 ### 6.3 Experiment Table
 
-| # | Model | Target | Split | Status | Notes |
+| # | Model | Formulation | Split | Status | Notes |
 |---|---|---|---|---|---|
-| 1 | GAT\_LN\_HEAD | R(8,000h) | Curve-hash | Pending | Simplest baseline |
-| 2 | GAT\_LN\_HEAD | Full curve (221 pts) | Curve-hash | Pending | Main experiment |
-| 3 | GAT\_LN\_HEAD | R(8,000h) | Allocation | Pending | Task generalisation |
-| 4 | GAT\_LN\_HEAD | Full curve (221 pts) | Allocation | Pending | Task generalisation |
-| 5 | GAT\_LN\_HEAD | Full curve (221 pts) | Hardware wiring (MD5) | Pending | Exact wiring generalisation |
-| 6 | GAT\_LN\_HEAD | Full curve (221 pts) | Hardware topology (WL) | Pending | Topology class generalisation |
+| 1 | GAT\_LN\_HEAD | Time-conditioned | Curve-hash | Pending | **Primary experiment** |
+| 2 | GAT\_LN\_HEAD | Time-conditioned | Allocation | Pending | Task generalisation |
+| 3 | GAT\_LN\_HEAD | Time-conditioned | Hardware wiring (MD5) | Pending | Wiring generalisation |
+| 4 | GAT\_LN\_HEAD | Time-conditioned | Hardware topology (WL) | Pending | Topology generalisation |
+| 5 | GAT\_LN\_HEAD | Full curve (221 pts) | Curve-hash | Pending | Supplementary comparison |
+| 6 | GAT\_LN\_HEAD | Full curve (221 pts) | Allocation | Pending | Supplementary comparison |
+| 7 | GAT\_LN\_HEAD | Single timestep R(8k) | Curve-hash | Pending | Simplest baseline |
 
-Experiments 5 and 6 use full curve only since baseline single-timestep is already covered by experiments 1–2. The accuracy gap between experiments 5 and 6 directly answers whether WL topology classes are physically meaningful hardware equivalence classes.
+Experiments 1–4 are the primary set — they test the time-conditioned formulation across all four split strategies, giving a complete picture of what the model generalises to. Experiments 5–6 compare the full curve formulation against time-conditioned on the two most important splits. Experiment 7 provides the simplest possible baseline.
 
-Results will be reported as MSE and MAE on the held-out set, plus crossing accuracy — for crossing pairs, what fraction does the model correctly rank for a given operating lifetime?
+The key comparison is **Exp 1 vs Exp 5** — time-conditioned vs full curve on the same split. If accuracy is similar, the implicit curve learning works as well as explicit prediction. If full curve is better, joint prediction provides useful inductive bias across timesteps.
+
+Results will be reported as MSE and MAE. For crossing pairs we additionally report crossing accuracy — for a queried lifetime t, what fraction of crossing pairs does the model correctly rank?
 
 ---
 
@@ -222,9 +268,10 @@ src/scripts/
 ├── 01_preprocess.py          ✅ Done — raw data → dataset.h5
 │                                       stores curve_hashes,
 │                                       hw_md5_hashes (11,903),
-│                                       hw_wl_hashes (392, VF2-verified)
+│                                       hw_wl_hashes  (392, VF2-verified)
 ├── verify_wl_exhaustive.py   ✅ Done — 356,589 VF2 pairs, 0 collisions
-├── 02_eda_deep.py            ✅ Done — full EDA, all plots above
+├── 02_eda_deep.py            ✅ Done — full EDA including hardware hash
+│                                       summary and config comparison
 ├── 03_split.py               ⏳ Next — produce splits.json
 │                                       (curve, allocation, MD5, WL axes)
 ├── 04_train.py               ⏳ Pending

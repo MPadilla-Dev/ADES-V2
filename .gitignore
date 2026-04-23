@@ -11,3 +11,9 @@ __pycache__/
 *.egg-info/
 .idea/
 .vscode/
+.venv/
+wandb/
+models/
+*.pth
+*.log
+tea_debug.log
