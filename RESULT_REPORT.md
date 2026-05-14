@@ -211,12 +211,12 @@ Measures overall ranking quality across all unique test curves at each query tim
 | Experiment | 2k | 4k | 8k | 12k | 16k | 22k |
 |---|---|---|---|---|---|---|
 | curve\_hash\_time\_conditioned | +0.834 | +0.867 | +0.890 | +0.898 | +0.922 | **+0.939** |
-| curve\_hash\_full\_curve | +0.761 | +0.848 | +0.884 | +0.891 | +0.915 | +0.933 |
-| curve\_hash\_single\_timestep | N/A | N/A | +0.883 | N/A | N/A | N/A |
 | allocation\_time\_conditioned | +0.821 | +0.830 | +0.831 | +0.837 | +0.823 | +0.788 |
-| allocation\_full\_curve | +0.641 | +0.745 | +0.789 | +0.803 | +0.780 | +0.775 |
 | hw\_md5\_time\_conditioned | +0.880 | +0.870 | +0.883 | +0.892 | +0.907 | +0.931 |
 | hw\_wl\_time\_conditioned | +0.871 | +0.878 | +0.901 | +0.915 | +0.927 | **+0.942** |
+| curve\_hash\_full\_curve | +0.761 | +0.848 | +0.884 | +0.891 | +0.915 | +0.933 |
+| allocation\_full\_curve | +0.641 | +0.745 | +0.789 | +0.803 | +0.780 | +0.775 |
+| curve\_hash\_single\_timestep | N/A | N/A | +0.883 | N/A | N/A | N/A |
 
 **Spearman vs crossing accuracy — why they disagree at early times:**
 Crossing accuracy at t=2,000h showed 26% (worse than random) for curve\_hash\_time\_conditioned, while Spearman shows +0.834 (strong). These are not contradictory — they measure different things. Spearman measures overall ranking across all curves, which is strong throughout. Crossing accuracy measures only the hardest cases — pairs whose curves cross — where margins are extremely tight at early times (both curves near R=0.99). The model handles broad ranking well but cannot resolve sub-0.01 differences at early times.
