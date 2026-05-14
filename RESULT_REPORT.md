@@ -130,8 +130,42 @@ A static ranking cannot answer "which configuration is best?" — the answer dep
 *Six crossing examples spanning early, mid, and late crossover times.*
 
 ---
+## 6. Split Diversity Analysis
 
-## 6. Experimental Results
+This table shows what each split actually exposes the model to — critical for interpreting the results. The "Curve overlap with train" column explains why hw_md5 and hw_wl test MSEs are lower than expected despite being hardware splits.
+
+### Per-Set Composition of Each Split
+
+| Split | Set | Samples | Unique curves | Unique hw_md5 | Unique hw_wl | Curves shared with train |
+|---|---|---|---|---|---|---|
+| **curve_hash** | Train | 100,775 | 2,287 | 11,347 | 388 | — |
+| | Val | 21,546 | 477 | 6,150 | 342 | **0 (0.0%)** |
+| | Test | 21,934 | 572 | 6,339 | 368 | **0 (0.0%)** |
+| **allocation** | Train | 110,532 | 2,934 | 11,436 | 392 | — |
+| | Val | 6,932 | 388 | 3,466 | 392 | 388 (13.2%) |
+| | Test | 26,791 | 1,382 | 10,363 | 392 | **980 (33.4%)** |
+| **hw_md5** | Train | 98,402 | 3,176 | 8,161 | 391 | — |
+| | Val | 20,806 | 1,993 | 1,701 | 346 | 1,908 (60.1%) |
+| | Test | 25,047 | 2,151 | 2,041 | 354 | **2,035 (64.1%)** |
+| **hw_wl** | Train | 99,777 | 2,839 | 8,198 | 268 | — |
+| | Val | 19,535 | 1,085 | 1,648 | 56 | 1,069 (37.7%) |
+| | Test | 24,943 | 1,364 | 2,057 | 68 | **1,069 (37.7%)** |
+
+### What This Table Reveals
+
+**curve_hash is the strictest split for reliability prediction.** Zero curve overlap between train and test — every reliability value in the test set is genuinely unseen. The model must interpolate into new regions of the reliability space.
+
+**allocation test set has 33.4% curve overlap.** The same reliability value can be achieved by different task strategies. The model has seen these reliability values before — just under different allocations. The difficulty comes from unseen graph structure, not unseen outputs.
+
+**hw_md5 and hw_wl have 64% and 38% curve overlap respectively.** This is why their test MSE is lower than expected despite being hardware splits — the model has seen 64% of the test reliability values during training from different hardware wirings. The splits test structural generalisation with partially familiar outputs.
+
+**Allocation test has all 392 WL topology classes** — holding out allocations does not hold out any hardware topology. The model has seen every hardware structure during training but never those specific task-to-hardware combinations.
+
+**The curve_hash split is the only one that is strict about output novelty.** The hardware splits are strict about input novelty. These are genuinely different generalisation questions and should not be directly compared by MSE alone.
+
+---
+
+## 7. Experimental Results
 ### 6.0 Experimental Mapping
 
 ![Mapping Examples](results/02_eda_deep/mapping.png)
