@@ -204,7 +204,24 @@ Fraction of crossing pairs correctly ranked at each query time. Random baseline 
 | allocation\_full\_curve | **72.4%** | 70.5% | 75.1% | 71.8% | 61.1% | 67.4% |
 | curve\_hash\_single\_timestep | 0.0% | 0.0% | 41.9% | 0.0% | 0.0% | 0.0% |
 
-### 6.4 Key Findings from Results
+### 6.4 Spearman Rank Correlation
+
+Measures overall ranking quality across all unique test curves at each query time. Range: -1 (inverted) to +1 (perfect). 0 = random.
+
+| Experiment | 2k | 4k | 8k | 12k | 16k | 22k |
+|---|---|---|---|---|---|---|
+| curve\_hash\_time\_conditioned | +0.834 | +0.867 | +0.890 | +0.898 | +0.922 | **+0.939** |
+| curve\_hash\_full\_curve | +0.761 | +0.848 | +0.884 | +0.891 | +0.915 | +0.933 |
+| curve\_hash\_single\_timestep | N/A | N/A | +0.883 | N/A | N/A | N/A |
+| allocation\_time\_conditioned | +0.821 | +0.830 | +0.831 | +0.837 | +0.823 | +0.788 |
+| allocation\_full\_curve | +0.641 | +0.745 | +0.789 | +0.803 | +0.780 | +0.775 |
+| hw\_md5\_time\_conditioned | +0.880 | +0.870 | +0.883 | +0.892 | +0.907 | +0.931 |
+| hw\_wl\_time\_conditioned | +0.871 | +0.878 | +0.901 | +0.915 | +0.927 | **+0.942** |
+
+**Spearman vs crossing accuracy — why they disagree at early times:**
+Crossing accuracy at t=2,000h showed 26% (worse than random) for curve\_hash\_time\_conditioned, while Spearman shows +0.834 (strong). These are not contradictory — they measure different things. Spearman measures overall ranking across all curves, which is strong throughout. Crossing accuracy measures only the hardest cases — pairs whose curves cross — where margins are extremely tight at early times (both curves near R=0.99). The model handles broad ranking well but cannot resolve sub-0.01 differences at early times.
+
+### 6.5 Key Findings from Results
 
 **Finding 1 — Formulation does not matter for MSE, but matters for crossing accuracy.**
 Time-conditioned and full curve achieve virtually identical MSE (difference = 0.000036) on the same split. However full curve is better calibrated at early timesteps — at t=2,000h full curve achieves 50.9% (random) while time-conditioned achieves only 26.3% (worse than random). Joint prediction of all 221 timesteps provides useful regularisation.
@@ -224,6 +241,7 @@ The model has partially but not fully learned the task-placement → reliability
 **Finding 6 — Single timestep is actively harmful for crossing accuracy.**
 At all timesteps except t=8,000h it scores 0% (no predictions). At t=8,000h it scores 41.9% — worse than random. This confirms single-point prediction cannot be used for system adaptation decisions.
 
+---
 ---
 
 ## 7. Pipeline Status — Complete
