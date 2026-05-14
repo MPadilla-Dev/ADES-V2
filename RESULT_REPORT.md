@@ -132,6 +132,10 @@ A static ranking cannot answer "which configuration is best?" — the answer dep
 ---
 
 ## 6. Experimental Results
+### 6.0 Experimental Mapping
+
+![Mapping Examples](results/02_eda_deep/mapping.png)
+
 
 ### 6.1 Model Architecture
 
