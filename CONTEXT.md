@@ -1,5 +1,5 @@
 # ADES-v2: Project Context Document
-> Last updated: April 2026
+> Last updated: May 2026
 > Purpose: Continuity document — upload this to any new chat to restore full project context.
 > To resume: read this file, then ask to continue from the last completed step.
 
@@ -11,361 +11,227 @@
 using a Graph Neural Network (GNN), enabling real-time system adaptation without
 running expensive CTMC simulations.
 
-**Institution:** University / CSC Finland — compute runs on **Puhti** (CSC supercomputer),
-managed via **MyCSC** under project `project_2016976`.
-
-**Key value proposition:** CTMC simulation takes hours per configuration. The GNN predicts
-in ~0.35ms. The model enables evaluation of unseen configurations at runtime.
-
-**Collaborators:** Manuel Padilla (mpadilla). Previous intake also included Tariq Aziz.
+**Institution:** University / CSC Finland — Puhti supercomputer, project `project_2016976`.
+**User:** mpadilla. Previous intake also included Tariq Aziz.
 
 ---
 
 ## 2. Infrastructure & File Paths
 
-### Puhti Account
-```
-User         : mpadilla
-Project      : project_2016976
-Login node   : puhti-login14 or r18c01
-```
-
-### Directory Layout
 ```
 /projappl/project_2016976/
-├── ADES-v2/                              ← ACTIVE repo (this project)
-│   ├── src/
-│   │   ├── scripts/                      ← pipeline (00 → 01 → 02 → 03 → 04)
-│   │   ├── GAT_LN_HEAD.py                ← best model architecture (carried over)
-│   │   ├── GAT_LN.py
-│   │   └── GAT.py
+├── ADES-v2/                          ← ACTIVE repo
+│   ├── src/scripts/                  ← pipeline scripts 00–05
 │   ├── data/
-│   │   └── new_raw -> /scratch/project_2016976/data_2026_manuel/new_raw  ← SYMLINK
+│   │   ├── new_raw -> /scratch/.../data_2026_manuel/new_raw  (symlink)
+│   │   ├── dataset.h5                ← preprocessed HDF5 (on scratch via symlink)
+│   │   └── splits.json               ← train/val/test indices for all 4 splits
+│   ├── models/                       ← 7 trained model checkpoints (.pth)
 │   ├── results/
-│   │   └── 00_verify/                    ← EDA outputs already generated
-│   ├── logs/
-│   ├── .gitignore
-│   ├── README.md
-│   └── CONTEXT.md                        ← this file
+│   │   ├── 02_eda_deep/              ← EDA plots
+│   │   └── 05_evaluate/              ← evaluation results, plots, summary
+│   ├── logs/                         ← job outputs
+│   └── .venv/                        ← Python venv (pytorch/2.4 base)
 │
-└── ADES-reliability-estimation/          ← OLD repo, keep for reference, do not modify
+└── ADES-reliability-estimation/      ← OLD repo, do not modify
 
-/scratch/project_2016976/
-└── data_2026_manuel/
-    ├── new_raw/                          ← ONLY dataset that matters
-    │   ├── config_all_0_22000_100.csv   ← reliability curves (targets)
-    │   └── matrices.zip                 ← graph adjacency files (inputs)
-    ├── 3-switches-5-slaves/             ← IGNORE — intake 4 only, different problem
-    ├── 5-switches-7-slaves/             ← IGNORE — incomplete, no reliability data
-    ├── interim_graph_features.pt        ← OLD, do not use
-    ├── processed_compact/               ← OLD, do not use
-    └── processed_intake5.pt             ← OLD, do not use
+/scratch/project_2016976/data_2026_manuel/new_raw/
+├── config_all_0_22000_100.csv        ← reliability curves (targets)
+└── matrices.zip                      ← graph adjacency files (inputs)
 ```
 
-### .gitignore (critical — never commit data or model weights)
-```
-data/
-*.pt
-*.h5
-*.zip
-*.csv
-results/
-logs/
-*.png
-*.out
-__pycache__/
-*.pyc
-.venv/
-*.egg-info/
-.idea/
-.vscode/
+**Environment activation (always required before running scripts):**
+```bash
+module load pytorch/2.4
+source /projappl/project_2016976/ADES-v2/.venv/bin/activate
 ```
 
 ---
 
-## 3. Compute Budget (as of April 2026)
-
-| Resource | Used | Remaining | Total |
-|---|---|---|---|
-| GPU | 28K BU | 122K BU | 150K BU |
-| CPU | 1.5K BU | 118K BU | 120K BU |
-| Storage | 0 BU | 60K BU | 60K BU |
-
-- V100 GPU on Puhti ≈ 60 BU/hour → ~2,000 GPU-hours remaining
-- Only 1 concurrent job allowed on interactive/small partition
-- Never run `du -sh $SCRATCH/*` — hangs on Lustre. Use `--max-depth=1`
-
----
-
-## 4. Raw Data Structure
-
-### CSV — Reliability Curves
-```
-File    : data/new_raw/config_all_0_22000_100.csv
-Rows    : 144,255
-Columns : CONFIG, 0, 100, 200, ..., 22000  (221 time columns + 1 ID column)
-Index   : CONFIG = "{alloc_id}_{config_num}"  e.g. "0000_0736"
-Values  : Reliability ∈ (0, 1], always exactly 1.0 at t=0
-Step    : every 100 hours, 0h to 22,000h
-NaN     : none
-```
-
-### ZIP — Graph Files
-```
-File    : data/new_raw/matrices.zip
-Total   : 144,286 txt files
-Matched : 144,255 (have CSV target)
-Skipped : 31 files (*_0001 for alloc 0000–0030, suspected data generation bug)
-
-Internal path: {alloc_id}/matrix/config_{config_num}.txt
-Example:       0000/matrix/config_0736.txt
-```
-
-Each txt file format:
-```
-# ['N1', 'N1S1', 'N1S2', 'N2', ..., 'S1', 'S1S2', 'T1_1', 'T2_4']
-[[0. 0. 1. ...]
- [1. 0. 0. ...]
- ...]
-Line 1   : Python list of node names (prefixed with #)
-Remaining: Adjacency matrix (floats, bracket-wrapped)
-```
-
----
-
-## 5. Node Naming Convention & Classifier
+## 3. Raw Data Structure
 
 ```
-N1, N2, N3 ...          → compute   (slave/processing unit)
-S1, S2, S3 ...          → switch
-N1S1, N1S2, S1S2 ...   → link      (two device names fused = link between them)
-T1_1, T1_2, T2_4 ...   → task      (underscore present; T1 or T2 = task type)
+144,255 samples, 30 nodes each (fixed), 221 time points (0h–22,000h, step 100h)
+
+Node types:
+  6 compute (N1–N6)    — each connects to 0, 1, or 2 switches
+  3 switch  (S1–S3)
+  15 link   (N1S1...)  — encode endpoints in name
+  6 task    (T1_1, T2_4...) — connect to compute nodes; vary by allocation
+
+31 allocations (task-to-compute assignments), 8 functional symmetry groups
+11,903 unique hardware wirings (MD5, task edges stripped)
+392 unique hardware topology classes (WL hash, VF2-proven exact)
+3,336 unique reliability curves
 ```
 
-**Canonical classifier — single source of truth, use this everywhere:**
+**Node classifier (canonical, use everywhere):**
 ```python
-def classify_node(name: str) -> str:
-    if '_' in name:
-        return 'task'
+def classify_node(name):
+    if '_' in name: return 'task'
     stripped = ''.join(c for c in name if not c.isdigit())
-    if len(stripped) >= 2:
-        return 'link'
-    if name.startswith('N'):
-        return 'compute'
-    if name.startswith('S'):
-        return 'switch'
+    if len(stripped) >= 2: return 'link'
+    if name.startswith('N'): return 'compute'
+    if name.startswith('S'): return 'switch'
     return 'unknown'
 ```
 
-**Graph structure (fixed across all 144,255 samples):**
-```
-Total nodes : 30 (always exactly 30, no variation)
-  compute   : 6
-  switch    : 3
-  link      : 15
-  task      : 6  (T1 × 3 instances, T2 × 3 instances)
-```
+---
 
-Tasks are actual nodes in the graph connected to compute nodes.
-Different allocations = different task-to-compute connections = different topology.
+## 4. Key EDA Findings
+
+| Finding | Value |
+|---|---|
+| Curve redundancy | 97.7% — only 3,336 unique curves from 144,255 samples |
+| Task allocation variance | Explains 73% of overall reliability variance |
+| Hardware variance | Explains only 27% |
+| Curve crossing rate | 13.03% of unique curve pairs cross |
+| Moderate/deep crossings | 38% — static ranking impossible |
+| WL isomorphism | 392 groups, VF2-proven on 356,589 pairs, 0 collisions |
+| WL vs MD5 curve diff | Within one WL group same allocation can produce different curves (e.g. N6 connecting to 2 vs 1 switch when N6 hosts all tasks) |
+
+**Open domain expert question:** Do all compute nodes have identical failure rates in the CTMC? If yes, WL is the correct hardware identity. Empirical evidence (5% gap between WL and MD5 splits) suggests approximately yes.
+
+**Nines classification is invalid** — all samples fall below 0.9 by t=22,000h.
 
 ---
 
-## 6. EDA Findings — Complete
-
-All findings confirmed by running `src/scripts/00_verify_data.py` on April 2026.
-
-### Reliability Curve Distribution
-```
-t=0h     : all exactly 1.0
-t=1,000h : min=0.9430  mean=0.9770  max=0.9997  (<0.9:  0.0%)
-t=2,000h : min=0.8893  mean=0.9543  max=0.9987  (<0.9:  0.2%)
-t=4,000h : min=0.7908  mean=0.9103  max=0.9950  (<0.9: 38.3%)
-t=8,000h : min=0.6254  mean=0.8270  max=0.9812  (<0.9: 88.3%)
-t=12,000h: min=0.4946  mean=0.7503  max=0.9599  (<0.9: 99.1%)
-t=22,000h: min=0.2751  mean=0.5854  max=0.8834  (<0.9:100.0%)
-```
-
-The "nines" binning scheme (0.9, 0.99, 0.999...) from intake 4/5 is completely
-invalid for this data — all samples fall below 0.9 at t=22,000h and 88% fall
-below 0.9 by t=8,000h. Classification by nines was only meaningful in the narrow
-0–8,500h window used previously, and was measuring a degenerate distribution.
-
-### Curve Uniqueness — Critical Finding
-```
-Total curves    : 144,255
-Unique curves   : 3,336   (2.3% of dataset)
-Duplicate groups: 3,137
-Redundant copies: 140,919 (97.7% of dataset are exact copies of another curve)
-Most duplicated : 3,716 copies of one curve
-```
-
-**Confirmed: different graph topologies produce identical reliability curves.**
-200 structurally unique adjacency matrices verified to share the same curve in
-the top duplicate group. This is physics, not a bug — many topologies achieve
-equivalent redundancy/reliability properties through different physical layouts.
-
-**Implication for splitting:** Never split a curve hash group across train/test.
-All samples sharing a curve hash must go entirely to one side.
-
-### Finding 7: Task allocation explains 73% of overall reliability variance.
-Hardware configuration explains only 27%. Task placement is the dominant
-driver of system reliability, not hardware design. This reframes the
-problem: the model is primarily learning task-placement → reliability,
-not hardware → reliability.
-
-Three generalization questions ranked by difficulty:
-  Easy   — curve-hash split (unseen reliability values)
-  Medium — allocation split (unseen task strategies, known hardware)
-  Hard   — hardware-config split (completely unseen hardware + tasks)
-
-### Curve Crossings — Critical Finding
-```
-Method: pairwise comparison of 3,336 unique curves
-        t=0 excluded (shared anchor), min diff threshold > 0.01
-Total pairs checked : 2,835,500
-Crossing pairs      : 562,620  (19.84%)
-
-Crossing depth distribution:
-  shallow  (0.01–0.05): 56.8%
-  moderate (0.05–0.10): 29.7%  ← meaningful for design decisions
-  deep     (>0.10)    : 13.4%  ← major behavioral differences
-
-Example deep crossings (real crossover times):
-  Curve A vs B: crossover at t=7,200h  (A ends 0.108 higher at t=22,000h)
-  Curve A vs C: crossover at t=5,900h
-  Curve A vs D: crossover at t=2,400h
-```
-
-**Conclusion 1 — static ranking is impossible.** 43.1% of crossing pairs are
-moderate or deep. The best configuration depends on operating time horizon.
-ML is necessary — a lookup table cannot answer "which is best for my mission?"
-
-**Conclusion 2 — full curve prediction is necessary.** Single timepoint prediction
-(e.g. R at t=8,000h) gives wrong rankings for crossing pairs whose crossover
-happens before or after that point. The operating lifetime determines the optimal
-choice and must be accounted for.
-
-### Allocation Balance & Symmetry
-```
-Number of allocations : 31
-Min samples           : 1,157  (alloc 0000)
-Max samples           : 7,372  (alloc 0019)
-Imbalance ratio       : 6.4×
-```
-
-Symmetry groups — many allocations are statistically identical (permutations):
-```
-Group A (mean R8k≈0.898): 0000, 0001, 0007, 0008, 0009
-Group B (mean R8k≈0.849): 0003, 0021
-Group C (mean R8k≈0.848): 0011, 0022
-Group D (mean R8k≈0.848): 0013, 0023
-Group E (mean R8k≈0.804): 0006, 0028
-Group F (mean R8k≈0.804): 0020, 0029
-Group G (mean R8k≈0.799): 0002, 0004, 0010, 0014
-Group H (mean R8k≈0.799): 0005, 0012, 0015, 0016, 0018
-Group I (mean R8k≈0.799): 0017, 0026
-Unique  (no match)       : 0024, 0025, 0027, 0030
-```
-The 31 allocations collapse into ~10 genuinely distinct reliability regimes.
-
----
-
-## 7. Design Decisions — All Locked In
-
-| Decision | Choice | Evidence |
-|---|---|---|
-| Prediction task | Regression — full curve (221 points) | Crossings confirmed, nines bins invalid |
-| Storage format | HDF5 (.h5) | Lustre-safe, memory-mappable, random access |
-| Time range stored | Full 0h–22,000h, never truncate | Crossings occur anywhere in range |
-| Splitting strategy | Dual test sets (see below) | Both generalization questions matter |
-| Model family | Single GNN — no ensemble | Ensemble approach discarded entirely |
-| Old topology folders | Ignored entirely | intake 4 only, different problem |
-| Old processed files | Ignored entirely | Wrong time range, wrong features, leakage |
-
-### Splitting Strategy — Dual Test Sets
-Two scientific questions are tested independently with one training run:
+## 5. HDF5 Schema
 
 ```
-Full dataset (144,255 samples, 3,336 unique curves)
-         │
-         ├── Allocation Test Set (~18.6%, ~26,791 samples)
-         │     Held-out allocations: 0009, 0013, 0025, 0019
-         │     One per reliability regime (high/medium/wide/low)
-         │     Tests: "Does model generalize to unseen task strategies?"
-         │
-         └── Remaining (~81.4%)
-                  │
-                  ├── Config Test Set (~17% of remaining, ~14% overall)
-                  │     Curve-hash groups held out, stratified by mean reliability
-                  │     Tests: "Does model predict unseen reliability values?"
-                  │
-                  └── Training Set (~70% overall)
-```
-
-**Interpreting the two scores:**
-- High config-test, low alloc-test → model memorizes allocation patterns
-- High config-test, high alloc-test → model learns true topology→reliability physics
-- The gap between the two scores is itself a publishable finding
-
----
-
-## 8. Pipeline — Current Status
-
-```
-src/scripts/
-├── 00_verify_data.py   ✅ COMPLETE — run April 2026, outputs in results/00_verify/
-├── 01_preprocess.py    ⏳ NEXT — raw zip + csv → dataset.h5 (full fidelity)
-├── 02_split.py         ⏳ TODO  — dual split → splits.json (just indices)
-├── 03_train.py         ⏳ TODO  — GNN training, lazy HDF5 loading
-└── 04_evaluate.py      ⏳ TODO  — evaluate on BOTH test sets, report separately
-```
-
-### HDF5 Schema (to be created by 01_preprocess.py)
-Each of 144,255 samples stored as a group under its config_id:
-```
-/0000_0736/
-    config_id     : str     "0000_0736"
-    allocation    : str     "0000"
-    config_num    : str     "0736"
-    node_names    : str[]   ["N1", "N1S1", ...]  (preserved for re-featurization)
-    node_features : f32[30, F]
-    edge_index    : i32[2, E]
-    y_curve       : f32[221]  full 0h–22,000h curve
-    curve_hash    : str     md5 of y_curve
-    adj_hash      : str     md5 of adjacency matrix
+meta/config_ids      [N] str   — "0000_0736"
+meta/allocations     [N] str   — "0000"
+meta/config_nums     [N] str   — "0736"
+meta/curve_hashes    [N] str   — md5 of y_curve (for curve-hash split)
+meta/adj_hashes      [N] str   — md5 of full adjacency matrix
+meta/hw_md5_hashes   [N] str   — md5 of hardware-only edges (11,903 unique)
+meta/hw_wl_hashes    [N] str   — WL hash of hardware subgraph (392 unique)
+meta/node_names      [N,30] str
+features/node_features [N,30,5] f32  — one-hot [compute,switch,link,T1,T2]
+edges/edge_index     [2,E_tot] i32   — CSR format
+edges/edge_ptr       [N+1] i64
+targets/y_curve      [N,221] f32    — full 0h–22,000h reliability curve
 ```
 
 ---
 
-## 9. Model Architecture (carried over from old repo)
+## 6. Splits (splits.json)
 
-**GAT_LN_HEAD** — best previous model, use as baseline:
-```
-conv1 : GATConv(input_dim, 64, heads=8)  → 512-dim
-ln1   : LayerNorm(512)
-relu
-conv2 : GATConv(512, 32, heads=8)        → 256-dim
-ln2   : LayerNorm(256)
-drop  : Dropout(0.3)
-pool  : global_mean_pool
-fc    : Linear(256, output_dim)
-```
-For full curve regression: output_dim=221, loss=MSE.
-For single-point baseline: output_dim=1, target=R(8000h), use first.
+| Split | Groups | Train | Val | Test | Tests |
+|---|---|---|---|---|---|
+| curve_hash | 3,336 | 69.9% | 14.9% | 15.2% | Unseen reliability values |
+| allocation | 31 | 76.6% | 4.8% | 18.6% | Unseen task strategies |
+| hw_md5 | 11,903 | 68.2% | 14.4% | 17.4% | Unseen physical wirings |
+| hw_wl | 392 | 69.2% | 13.5% | 17.3% | Unseen topology classes |
 
-Previous results used classification + random split → not a valid comparison.
+Allocation test: 0009, 0013, 0025, 0019 (one per reliability regime)
+Allocation val:  0001, 0008
 
 ---
 
-## 10. Known Issues from Old Repo — Never Repeat
+## 7. Model Architecture
 
-1. Nines binning applied where all values < 0.9 — degenerate classification
-2. Time range truncated to 8,500h — misses crossings in the 8,500–22,000h range
-3. Random splitting — 97.7% curve redundancy means massive leakage
-4. Two incompatible preprocessing outputs existed simultaneously (5-feat vs 12-feat)
-5. Feature index 3 hardcoded to 0.0 as timestamp placeholder, never filled
-6. Node classifier used fragile else-catch-all silently misclassifying nodes
-7. betweenness_centrality O(VE) caused slow preprocessing
-8. du -sh $SCRATCH/* hangs on Puhti Lustre — always use --max-depth=1
-9. 97.7% curve redundancy was unknown and unhandled throughout
+**GAT_LN_HEAD** — 138,241 parameters
+```
+GATConv(input_dim, 64, heads=8) → LayerNorm(512) → ReLU
+GATConv(512, 32, heads=8)       → LayerNorm(256) → Dropout(0.3)
+global_mean_pool → Linear(256, output_dim)
+
+input_dim  = 6 for time_conditioned (5 one-hot + t_norm)
+           = 5 for full_curve / single_timestep
+output_dim = 1   for time_conditioned / single_timestep
+           = 221 for full_curve
+```
+
+Training: Adam lr=0.0005, ReduceLROnPlateau (factor=0.5, patience=10),
+early stopping patience=20, batch_size=64, max_epochs=300.
+
+---
+
+## 8. Trained Models (all in models/)
+
+| File | Split | Formulation | Best Val MSE |
+|---|---|---|---|
+| curve_hash_time_conditioned_best.pth | curve_hash | time_conditioned | 0.001389 (ep 84) |
+| curve_hash_full_curve_best.pth | curve_hash | full_curve | 0.001394 |
+| curve_hash_single_timestep_best.pth | curve_hash | single_timestep | 0.001003 |
+| allocation_time_conditioned_best.pth | allocation | time_conditioned | 0.002122 |
+| allocation_full_curve_best.pth | allocation | full_curve | 0.002134 |
+| hw_md5_time_conditioned_best.pth | hw_md5 | time_conditioned | 0.001598 |
+| hw_wl_time_conditioned_best.pth | hw_wl | time_conditioned | 0.001674 |
+
+---
+
+## 9. Evaluation Results
+
+### Standard Metrics at t=8,000h
+
+| Experiment | MSE | MAE | R² |
+|---|---|---|---|
+| curve_hash_time_conditioned | 0.001238 | 0.02681 | 0.6504 |
+| curve_hash_full_curve | 0.001202 | 0.02631 | 0.6606 |
+| curve_hash_single_timestep | 0.001212 | 0.02667 | 0.6578 |
+| allocation_time_conditioned | 0.001914 | 0.03209 | 0.4495 |
+| allocation_full_curve | 0.001889 | 0.03270 | 0.4568 |
+| hw_md5_time_conditioned | 0.001149 | 0.02589 | 0.6661 |
+| hw_wl_time_conditioned | 0.001207 | 0.02629 | 0.6564 |
+
+### Crossing Accuracy (% of crossing pairs correctly ranked)
+
+| Experiment | 2k | 4k | 8k | 12k | 16k | 22k |
+|---|---|---|---|---|---|---|
+| curve_hash_time_conditioned | 26.3% | 34.9% | 43.7% | 50.8% | 67.9% | 89.1% |
+| curve_hash_full_curve | 50.9% | 45.5% | 46.9% | 51.5% | 68.3% | 88.5% |
+| curve_hash_single_timestep | 0% | 0% | 41.9% | 0% | 0% | 0% |
+| allocation_time_conditioned | 72.0% | 73.7% | 79.1% | 77.7% | 69.6% | 59.5% |
+| allocation_full_curve | 72.4% | 70.5% | 75.1% | 71.8% | 61.1% | 67.4% |
+| hw_md5_time_conditioned | 43.9% | 39.6% | 46.8% | 54.8% | 67.7% | 90.8% |
+| hw_wl_time_conditioned | 40.9% | 40.2% | 51.6% | 58.9% | 67.9% | 79.5% |
+
+### Key Findings from Results
+
+1. **Formulation MSE is identical, crossing accuracy differs.** Time-conditioned and full curve have MSE difference of 0.000036. But full curve is better calibrated at early times (50.9% vs 26.3% at t=2k).
+
+2. **Model learned late-curve behavior better.** curve_hash crossing accuracy: 26.3% at t=2k → 89.1% at t=22k. Early reliability values cluster near 1.0 (hard to rank); late values spread widely (easy to rank).
+
+3. **Allocation split shows opposite crossing pattern.** Better at early times (72–79%), worse at late (59.5%). Task placement is most informative at short operating lifetimes.
+
+4. **Hardware generalisation is achievable.** hw_md5 R²=0.666, comparable to curve_hash. WL only 5% harder than MD5 — WL isomorphism approximately physically meaningful.
+
+5. **Allocation split is 54.6% harder** (R² drops 0.66 → 0.45). Primary area for future improvement.
+
+6. **Single timestep is harmful for crossing accuracy** — scores 0% at all times except its fixed t=8,000h, and even there scores 41.9% (below random). Unusable for system adaptation.
+
+---
+
+## 10. Pipeline Status — COMPLETE
+
+```
+00_verify_data.py    ✅ Done
+01_preprocess.py     ✅ Done — dataset.h5 with all hashes
+02_eda_deep.py       ✅ Done — 14 plots in results/02_eda_deep/
+03_split.py          ✅ Done — splits.json
+04_train.py          ✅ Done — 7 models trained
+05_evaluate.py       ✅ Done — results in results/05_evaluate/
+```
+
+---
+
+## 11. Suggested Next Steps
+
+1. Add explicit structural features (task-host node degree, switch connectivity of task-hosting node) to improve early-time crossing accuracy
+2. Improve allocation generalisation — R²=0.45 on unseen task strategies
+3. Clarify domain expert question on compute node failure rates
+4. Experiment with larger model (increase hidden_dim from 64)
+5. Try allocation-aware training strategy
+
+---
+
+## 12. Known Issues — Never Repeat
+
+1. `du -sh $SCRATCH/*` hangs on Puhti — use `--max-depth=1`
+2. Nines binning is invalid for this dataset at full time range
+3. Random splitting causes massive leakage (97.7% curve redundancy)
+4. WL hash on hardware-only subgraph groups non-equivalent configs (N6 task-host degree varies within WL group)
+5. Target shape mismatch bug (fixed): `batch.y` shape `[B]` vs pred `[B,1]` — always reshape with `target.view(pred.shape)`
+6. Never commit: `wandb/`, `models/`, `data/`, `*.h5`, `*.pth`, `*.log`, `*.out`
