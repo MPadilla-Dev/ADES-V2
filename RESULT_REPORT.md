@@ -149,12 +149,12 @@ A static ranking cannot answer "which configuration is best?" — the answer dep
 | # | Experiment | MSE | MAE | R² | Train time |
 |---|---|---|---|---|---|
 | 1 | curve_hash\_time\_conditioned | 0.001238 | 0.02681 | 0.6504 | 131 min (ep 84) |
-| 2 | curve_hash\_full\_curve | 0.001202 | 0.02631 | 0.6606 | 69 min |
-| 3 | curve_hash\_single\_timestep | 0.001212 | 0.02667 | 0.6578 | 43 min |
 | 4 | allocation\_time\_conditioned | 0.001914 | 0.03209 | 0.4495 | 38 min |
-| 5 | allocation\_full\_curve | 0.001889 | 0.03270 | 0.4568 | 37 min |
 | 6 | hw\_md5\_time\_conditioned | 0.001149 | 0.02589 | 0.6661 | 99 min |
 | 7 | hw\_wl\_time\_conditioned | 0.001207 | 0.02629 | 0.6564 | 61 min |
+| 2 | curve_hash\_full\_curve | 0.001202 | 0.02631 | 0.6606 | 69 min |
+| 5 | allocation\_full\_curve | 0.001889 | 0.03270 | 0.4568 | 37 min |
+| 3 | curve_hash\_single\_timestep | 0.001212 | 0.02667 | 0.6578 | 43 min |
 
 ### 6.3 Crossing Accuracy
 
@@ -163,12 +163,12 @@ Fraction of crossing pairs correctly ranked at each query time. Random baseline 
 | Experiment | 2k | 4k | 8k | 12k | 16k | 22k |
 |---|---|---|---|---|---|---|
 | curve\_hash\_time\_conditioned | 26.3% | 34.9% | 43.7% | 50.8% | 67.9% | **89.1%** |
-| curve\_hash\_full\_curve | 50.9% | 45.5% | 46.9% | 51.5% | 68.3% | **88.5%** |
-| curve\_hash\_single\_timestep | 0.0% | 0.0% | 41.9% | 0.0% | 0.0% | 0.0% |
 | allocation\_time\_conditioned | **72.0%** | **73.7%** | **79.1%** | **77.7%** | 69.6% | 59.5% |
-| allocation\_full\_curve | **72.4%** | 70.5% | 75.1% | 71.8% | 61.1% | 67.4% |
 | hw\_md5\_time\_conditioned | 43.9% | 39.6% | 46.8% | 54.8% | 67.7% | **90.8%** |
 | hw\_wl\_time\_conditioned | 40.9% | 40.2% | 51.6% | 58.9% | 67.9% | 79.5% |
+| curve\_hash\_full\_curve | 50.9% | 45.5% | 46.9% | 51.5% | 68.3% | **88.5%** |
+| allocation\_full\_curve | **72.4%** | 70.5% | 75.1% | 71.8% | 61.1% | 67.4% |
+| curve\_hash\_single\_timestep | 0.0% | 0.0% | 41.9% | 0.0% | 0.0% | 0.0% |
 
 ### 6.4 Key Findings from Results
 
